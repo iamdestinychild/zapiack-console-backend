@@ -1,0 +1,286 @@
+// Zapiack DB — READ-ONLY MIRROR.
+//
+// This schema is not the source of truth and must never be migrated from this repo.
+// It is a hand-maintained subset of the product schema owned by api-core, kept here
+// only to generate a typed read client. The database role behind ZAPIACK_READ_DATABASE_URL
+// has SELECT only, and points at the read replica.
+//
+// When api-core changes the product schema, mirror the change here and regenerate.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../../src/generated/zapiack"
+  runtime      = "nodejs"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+enum ChannelType {
+  SMS
+  EMAIL
+  WHATSAPP
+  VOICE
+  VIDEO
+  IN_APP
+  FACE_LIVENESS
+  MAPPING
+}
+
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+}
+
+enum BillingType {
+  PREPAID
+  POSTPAID
+  SUBSCRIPTION
+}
+
+enum TransactionType {
+  CREDIT
+  DEBIT
+  REFUND
+  ADJUSTMENT
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum SenderIdApplicationStatus {
+  SUBMITTED
+  IN_REVIEW
+  CHANGES_REQUESTED
+  REJECTED
+  APPROVED
+  SUBMITTED_TO_OPERATORS
+  ACTIVE
+  OPERATOR_REJECTED
+  SUSPENDED
+}
+
+model Account {
+  id             String        @id
+  businessName   String?
+  email          String
+  phone          String?
+  status         AccountStatus
+  /// NGN balance. Prepaid credits are a liability until spent.
+  balance        Decimal       @db.Decimal(19, 4)
+  country        String?
+  kycVerified    Boolean       @default(false)
+  kycDetails     Json?
+  createdAt      DateTime
+  updatedAt      DateTime
+
+  users         User[]
+  apiKeys       ApiKey[]
+  subscriptions Subscription[]
+  transactions  TabTransaction[]
+  payments      Payment[]
+  usage         UsageRecord[]
+  senderIds     SenderIdApplication[]
+
+  @@map("accounts")
+}
+
+model User {
+  id         String   @id
+  accountId  String
+  account    Account  @relation(fields: [accountId], references: [id])
+  email      String
+  firstName  String?
+  lastName   String?
+  phone      String?
+  lastLoginAt DateTime?
+  createdAt  DateTime
+
+  @@map("users")
+}
+
+model ApiKey {
+  id        String    @id
+  accountId String
+  account   Account   @relation(fields: [accountId], references: [id])
+  name      String?
+  /// First characters of the key, safe to show; the secret itself is never read by admin-core.
+  prefix    String
+  lastUsedAt DateTime?
+  revokedAt DateTime?
+  createdAt DateTime
+
+  @@index([prefix])
+  @@map("api_keys")
+}
+
+model Plan {
+  id          String      @id
+  name        String
+  billingType BillingType
+  priceNgn    Decimal     @db.Decimal(19, 4)
+  interval    String?     // month, year
+  features    Json?
+  active      Boolean     @default(true)
+  createdAt   DateTime
+
+  subscriptions Subscription[]
+  pricing       ChannelPricing[]
+
+  @@map("plans")
+}
+
+model Subscription {
+  id         String   @id
+  accountId  String
+  account    Account  @relation(fields: [accountId], references: [id])
+  planId     String
+  plan       Plan     @relation(fields: [planId], references: [id])
+  status     String
+  startedAt  DateTime
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  cancelledAt DateTime?
+
+  @@index([accountId, status])
+  @@map("subscriptions")
+}
+
+/// Customer-facing price per unit per channel, optionally per country/network.
+model ChannelPricing {
+  id            String      @id
+  channel       ChannelType
+  planId        String?
+  plan          Plan?       @relation(fields: [planId], references: [id])
+  /// Per-account override for enterprise deals; expires at effectiveTo.
+  accountId     String?
+  country       String?
+  network       String?
+  unitPriceNgn  Decimal     @db.Decimal(19, 4)
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+
+  @@index([channel, effectiveFrom])
+  @@index([accountId, channel])
+  @@map("channel_pricing")
+}
+
+/// Ledger.
+model TabTransaction {
+  id          String          @id
+  accountId   String
+  account     Account         @relation(fields: [accountId], references: [id])
+  type        TransactionType
+  amountNgn   Decimal         @db.Decimal(19, 4)
+  balanceAfter Decimal        @db.Decimal(19, 4)
+  reference   String?
+  description String?
+  metadata    Json?
+  createdAt   DateTime
+
+  @@index([accountId, createdAt])
+  @@map("tab_transactions")
+}
+
+model Payment {
+  id          String        @id
+  accountId   String
+  account     Account       @relation(fields: [accountId], references: [id])
+  provider    String        @default("paystack")
+  reference   String
+  amountNgn   Decimal       @db.Decimal(19, 4)
+  feeNgn      Decimal       @default(0) @db.Decimal(19, 4)
+  refundedNgn Decimal       @default(0) @db.Decimal(19, 4)
+  status      PaymentStatus
+  paidAt      DateTime?
+  settledAt   DateTime?
+  createdAt   DateTime
+
+  @@index([status, paidAt])
+  @@index([accountId, createdAt])
+  @@map("payments")
+}
+
+/// One row per billable event across every product line.
+/// Provider cost is stored at send time so historical profit never drifts.
+model UsageRecord {
+  id             String      @id
+  accountId      String
+  account        Account     @relation(fields: [accountId], references: [id])
+  channel        ChannelType
+  provider       String?
+  units          Int         @default(1)
+  pricePerUnitNgn Decimal    @db.Decimal(19, 4)
+  totalPriceNgn  Decimal     @db.Decimal(19, 4)
+  providerCostNgn Decimal?   @db.Decimal(19, 4)
+  status         String      // accepted, delivered, failed...
+  failureReason  String?
+  destinationCountry String?
+  destinationNetwork String?
+  latencyMs      Int?
+  /// Channel-specific detail: pages, call seconds, participant minutes, liveness result...
+  attributes     Json?
+  createdAt      DateTime
+  deliveredAt    DateTime?
+
+  @@index([accountId, createdAt])
+  @@index([channel, createdAt])
+  @@index([createdAt])
+  @@map("usage_records")
+}
+
+model SenderIdApplication {
+  id          String                    @id
+  accountId   String
+  account     Account                   @relation(fields: [accountId], references: [id])
+  senderId    String
+  status      SenderIdApplicationStatus
+  useCase     String?
+  sampleMessage String?
+  applicantType String?                 // registered_business | individual
+  submittedAt DateTime
+  decidedAt   DateTime?
+  createdAt   DateTime
+
+  documents SenderIdDocument[]
+
+  @@index([status, submittedAt])
+  @@map("sender_id_applications")
+}
+
+model SenderIdDocument {
+  id            String              @id
+  applicationId String
+  application   SenderIdApplication @relation(fields: [applicationId], references: [id])
+  kind          String              // cac_certificate, letter_of_authorisation, id_card...
+  fileName      String
+  contentType   String
+  sizeBytes     Int
+  /// Private S3 object key. Never sent to the browser.
+  objectKey     String
+  uploadedBy    String?
+  uploadedAt    DateTime
+
+  @@index([applicationId])
+  @@map("sender_id_documents")
+}
+
+/// Customer inbox rows. admin-core reads these; writes go through api-core.
+model Notification {
+  id        String    @id
+  accountId String
+  title     String
+  body      String
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime
+
+  @@index([accountId, createdAt])
+  @@map("notifications")
+}
