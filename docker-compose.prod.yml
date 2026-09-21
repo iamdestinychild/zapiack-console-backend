@@ -1,0 +1,123 @@
+# admin-core on a DigitalOcean droplet.
+#
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Reads .env from this directory. Nothing here publishes a port except Caddy, so
+# Postgres, Redis and the app are reachable only from inside the compose network.
+# Lock the droplet firewall to 22, 80 and 443.
+
+x-app: &app
+  image: ${ADMIN_IMAGE:-ghcr.io/zapiack/admin-core:latest}
+  env_file: [.env]
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+    migrate: { condition: service_completed_successfully }
+  restart: unless-stopped
+  networks: [admin_net]
+  volumes:
+    # GeoLite2 is licensed and refreshed weekly, so it is mounted rather than baked in.
+    - ./data:/app/data:ro
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: admin_caddy
+    depends_on: [admin-core]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ADMIN_DOMAIN: ${ADMIN_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates live here. Losing this volume means re-issuing on next start,
+      # which is rate limited by Let's Encrypt — keep it.
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    restart: unless-stopped
+    networks: [admin_net]
+
+  # Runs to completion before web and worker start, so no process ever serves
+  # traffic against a schema it does not match.
+  migrate:
+    image: ${ADMIN_IMAGE:-ghcr.io/zapiack/admin-core:latest}
+    container_name: admin_migrate
+    env_file: [.env]
+    command: ["npx", "prisma", "migrate", "deploy", "--config", "prisma.admin.config.ts"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+    networks: [admin_net]
+
+  admin-core:
+    <<: *app
+    container_name: admin_core_web
+    environment:
+      ADMIN_ROLE: web
+      PORT: 3001
+
+  admin-worker:
+    <<: *app
+    container_name: admin_core_worker
+    environment:
+      ADMIN_ROLE: worker
+      # Binds HTTP only so the health probe has something to hit; nothing routes here.
+      PORT: 3002
+
+  postgres:
+    image: postgres:17
+    container_name: admin_postgres
+    env_file: [.env]
+    environment:
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks: [admin_net]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  redis:
+    image: redis:7-alpine
+    container_name: admin_redis
+    command: >
+      redis-server --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --maxmemory-policy noeviction
+    env_file: [.env]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks: [admin_net]
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+  caddy_logs:
+
+networks:
+  admin_net:
+    driver: bridge

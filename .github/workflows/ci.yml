@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push supersedes an in-flight run on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  verify:
+    name: Lint, typecheck and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+
+      # The generated Prisma clients are gitignored, so nothing compiles without this.
+      - name: Generate Prisma clients
+        run: npm run prisma:generate
+
+      - run: npm run typecheck
+      - run: npx eslint "src/**/*.ts" "test/**/*.ts"
+      - run: npx jest --ci --coverage
+      - run: npx nest build
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 7
+
+  migrations:
+    name: Migrations apply to an empty database
+    runs-on: ubuntu-latest
+    # Catches hand-written SQL that Prisma cannot validate on its own: the audit-log
+    # triggers and the request_logs partitioning both live outside the schema file.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: zapiack_admin
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ADMIN_DATABASE_URL: postgresql://ci:ci@localhost:5432/zapiack_admin
+      ZAPIACK_READ_DATABASE_URL: postgresql://ci:ci@localhost:5432/zapiack
+      # Replaying the migrations directory needs somewhere to replay it into.
+      ADMIN_SHADOW_DATABASE_URL: postgresql://ci:ci@localhost:5432/shadow
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run prisma:generate
+
+      - name: Create the mirror and shadow databases
+        run: |
+          PGPASSWORD=ci psql -h localhost -U ci -d postgres -c 'CREATE DATABASE zapiack;'
+          PGPASSWORD=ci psql -h localhost -U ci -d postgres -c 'CREATE DATABASE shadow;'
+
+      - name: Apply migrations
+        run: npx prisma migrate deploy --config prisma.admin.config.ts
+
+      - name: Schema matches the migrations
+        # Replays the migrations into the shadow database and compares the result to
+        # schema.prisma. A model edited without a migration only surfaces here.
+        run: |
+          npx prisma migrate diff \
+            --from-migrations prisma/admin/migrations \
+            --to-schema prisma/admin/schema.prisma \
+            --config prisma.admin.config.ts \
+            --exit-code \
+          || { echo "::error::schema.prisma and the migrations have diverged"; exit 1; }
+
+      - name: Hardening actually took effect
+        run: |
+          PGPASSWORD=ci psql -h localhost -U ci -d zapiack_admin -v ON_ERROR_STOP=0 <<'SQL'
+          INSERT INTO audit_log (id, action) VALUES ('ci-1', 'ci.probe');
+          SQL
+          echo "-- the audit log must reject an update"
+          if PGPASSWORD=ci psql -h localhost -U ci -d zapiack_admin -v ON_ERROR_STOP=1 \
+               -c "UPDATE audit_log SET action='tampered' WHERE id='ci-1';" 2>/dev/null; then
+            echo "::error::audit_log accepted an UPDATE; the append-only trigger is missing"
+            exit 1
+          fi
+          echo "-- request_logs must be partitioned"
+          PARTITIONED=$(PGPASSWORD=ci psql -h localhost -U ci -d zapiack_admin -tAc \
+            "SELECT relkind FROM pg_class WHERE relname='request_logs';")
+          if [ "$PARTITIONED" != "p" ]; then
+            echo "::error::request_logs is not a partitioned table (relkind=$PARTITIONED)"
+            exit 1
+          fi
+
+  image:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: zapiack-admin-core:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  config:
+    name: Caddy and compose are valid
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate the Caddyfile
+        run: |
+          docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            -e ADMIN_DOMAIN=admin-api.example.com -e ACME_EMAIL=ops@example.com \
+            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+
+      - name: Validate the production compose
+        env:
+          ADMIN_DOMAIN: admin-api.example.com
+          ACME_EMAIL: ops@example.com
+          DB_USERNAME: ci
+          DB_PASSWORD: ci
+          DB_NAME: zapiack_admin
+          REDIS_PASSWORD: ci
+        run: docker compose -f docker-compose.prod.yml config --quiet

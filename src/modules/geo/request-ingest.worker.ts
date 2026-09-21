@@ -14,7 +14,14 @@ import { GeoIpService } from '../../integrations/geoip/geoip.service';
 import { maskIp } from '../../common/http/masking';
 import type { AdminConfig } from '../../common/config/configuration';
 
-/** The stream api-core's middleware writes to, without awaiting it. */
+/**
+ * The stream api-core's middleware writes to, without awaiting it.
+ *
+ * The full key is `<REDIS_KEY_PREFIX>stream:request.logged`, i.e.
+ * `admin-core:stream:request.logged` by default. api-core must XADD to exactly that
+ * key — the reader below uses a connection with no `keyPrefix` of its own so the key
+ * is written out in full here and cannot drift.
+ */
 export const REQUEST_STREAM = 'stream:request.logged';
 const CONSUMER_GROUP = 'admin-core-geo';
 
@@ -63,17 +70,12 @@ export class RequestIngestWorker implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
-    this.reader = this.redis.duplicate();
+    this.reader = this.redis.duplicate({ withKeyPrefix: false });
+    const key = this.redis.streamKey(REQUEST_STREAM);
 
     // MKSTREAM so the group exists even before api-core has emitted anything.
     await this.reader
-      .xgroup(
-        'CREATE',
-        `${this.redis.prefix}${REQUEST_STREAM}`,
-        CONSUMER_GROUP,
-        '0',
-        'MKSTREAM',
-      )
+      .xgroup('CREATE', key, CONSUMER_GROUP, '0', 'MKSTREAM')
       .catch((err: Error) => {
         // The group already exists, which is the desired end state.
         if (!err.message.includes('BUSYGROUP')) throw err;
@@ -88,7 +90,7 @@ export class RequestIngestWorker implements OnModuleInit, OnModuleDestroy {
   }
 
   private async loop() {
-    const key = `${this.redis.prefix}${REQUEST_STREAM}`;
+    const key = this.redis.streamKey(REQUEST_STREAM);
 
     while (this.running) {
       try {

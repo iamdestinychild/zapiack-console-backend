@@ -4,7 +4,6 @@ import { QUEUES } from '../jobs/queues';
 import { InboxModule } from '../inbox/inbox.module';
 import { SenderIdsModule } from '../sender-ids/sender-ids.module';
 import { EventsController } from './events.controller';
-import { EventsProcessor } from './events.processor';
 import { EventsService } from './events.service';
 
 @Module({
@@ -14,7 +13,7 @@ import { EventsService } from './events.service';
     InboxModule,
   ],
   controllers: [EventsController],
-  providers: [EventsService, EventsProcessor],
+  providers: [EventsService],
   exports: [EventsService],
 })
 export class EventsModule {}

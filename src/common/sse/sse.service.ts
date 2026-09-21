@@ -28,7 +28,7 @@ export class SseService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit() {
     this.subscriber = this.redis.duplicate();
-    await this.subscriber.psubscribe(`${this.redis.prefix}sse:*`);
+    await this.subscriber.psubscribe(this.redis.channel('sse', '*'));
     this.subscriber.on('pmessage', (_pattern, channel, payload) => {
       try {
         const { event, data } = JSON.parse(payload) as {
@@ -36,7 +36,7 @@ export class SseService implements OnModuleInit, OnModuleDestroy {
           data: unknown;
         };
         this.stream$.next({
-          channel: channel.slice(`${this.redis.prefix}sse:`.length),
+          channel: channel.slice(this.redis.channel('sse', '').length),
           event,
           data,
         });
@@ -50,7 +50,7 @@ export class SseService implements OnModuleInit, OnModuleDestroy {
 
   async publish(channel: string, event: string, data: unknown): Promise<void> {
     await this.redis.client.publish(
-      `sse:${channel}`,
+      this.redis.channel('sse', channel),
       JSON.stringify({ event, data }),
     );
   }

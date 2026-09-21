@@ -146,6 +146,20 @@ Inbound events (`usage.recorded`, `request.logged`, `auth.signin`, `payment.*`,
 job keyed by event id. A sweep re-queues anything stuck, which is the reason for
 persisting first.
 
+## Deploying
+
+One DigitalOcean droplet: Caddy terminates TLS in front of a `web` container and a
+`worker` container, with Postgres and Redis alongside and a one-shot migration job that
+runs before either starts. GitHub Actions builds the image, pushes it to GHCR and
+restarts the stack on every push to `main`.
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
+Full instructions, including droplet setup, the GitHub secrets, rollback and backups:
+[docs/deployment.md](docs/deployment.md).
+
 ## Testing
 
 ```bash

@@ -1,11 +1,11 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ScheduleModule } from '@nestjs/schedule';
 import { BullModule } from '@nestjs/bullmq';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 
 import configuration, { type AdminConfig } from './common/config/configuration';
+import { runsBackgroundWork } from './common/config/role';
 import { validateEnv } from './common/config/env.validation';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { RedisModule } from './common/redis/redis.module';
@@ -49,11 +49,14 @@ import { JobsModule } from './modules/jobs/jobs.module';
       validate: validateEnv,
       cache: true,
     }),
-    ScheduleModule.forRoot(),
     BullModule.forRootAsync({
       inject: [RedisService],
       useFactory: (redis: RedisService) => ({
         connection: redis.bullConnection,
+        // BullMQ manages its own connections and never sees ioredis' keyPrefix, so
+        // its namespace is set here. Without it, queues land under a bare `bull:`
+        // shared with anything else on this Redis.
+        prefix: `${redis.prefix}bull`,
       }),
     }),
     /**
@@ -95,7 +98,10 @@ import { JobsModule } from './modules/jobs/jobs.module';
     EventsModule,
     RiskModule,
     RollupsModule,
-    JobsModule,
+
+    // Timers and queue consumers run only where they are wanted. A `web` process
+    // enqueues work; a `worker` process performs it.
+    ...(runsBackgroundWork() ? [JobsModule] : []),
   ],
   controllers: [HealthController],
   providers: [

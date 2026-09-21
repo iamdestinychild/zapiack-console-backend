@@ -14,5 +14,8 @@ export default defineConfig({
   },
   datasource: {
     url: process.env.ADMIN_DATABASE_URL,
+    // Needed to replay the migrations directory, which is how CI checks that
+    // schema.prisma and the migrations have not drifted apart. Optional locally.
+    shadowDatabaseUrl: process.env.ADMIN_SHADOW_DATABASE_URL,
   },
 });

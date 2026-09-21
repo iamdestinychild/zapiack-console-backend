@@ -2,8 +2,16 @@
  * Every setting admin-core reads. Secrets come from the environment or a secrets
  * manager — never from the repo.
  */
+/**
+ * What this process does. `web` serves HTTP, `worker` runs the schedulers, queue
+ * processors and the request-ingest loop, `all` does both — which is the sensible
+ * default for local development and small deployments.
+ */
+export type ProcessRole = 'web' | 'worker' | 'all';
+
 export interface AdminConfig {
   env: 'development' | 'test' | 'staging' | 'production';
+  role: ProcessRole;
   port: number;
   /** The console origin; CORS allows this and nothing else. */
   corsOrigin: string[];
@@ -108,6 +116,7 @@ const list = (v: string | undefined) =>
 
 export default (): AdminConfig => ({
   env: (process.env.NODE_ENV as AdminConfig['env']) ?? 'development',
+  role: (process.env.ADMIN_ROLE as ProcessRole) ?? 'all',
   port: int(process.env.PORT, 3001),
   corsOrigin: list(process.env.ADMIN_CORS_ORIGIN ?? 'http://localhost:3000'),
   timezone: process.env.ADMIN_TIMEZONE ?? 'Africa/Lagos',

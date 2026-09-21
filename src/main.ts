@@ -70,9 +70,12 @@ async function bootstrap() {
   app.set('trust proxy', 1);
   app.enableShutdownHooks();
 
-  await app.listen(cfg.port);
+  await app.listen(cfg.port, '0.0.0.0');
+
+  // A worker binds HTTP too, so /health answers for the container probe; nothing
+  // routes traffic to it. Only the web role sits behind Caddy.
   logger.log(
-    `admin-core listening on ${cfg.port} (${cfg.env}), console origin ${cfg.corsOrigin.join(', ')}`,
+    `admin-core [${cfg.role}] listening on ${cfg.port} (${cfg.env}), console origin ${cfg.corsOrigin.join(', ')}`,
   );
 }
 
