@@ -113,9 +113,13 @@ export interface AdminConfig {
 const bool = (v: string | undefined, fallback: boolean) =>
   v === undefined ? fallback : ['1', 'true', 'yes'].includes(v.toLowerCase());
 const int = (v: string | undefined, fallback: number) => {
+  // A blank value (an env var created but left empty) is "not set", not zero.
+  if (v === undefined || v.trim() === '') return fallback;
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
 };
+/** A value below the floor is almost certainly a unit slip (minutes for seconds). */
+const atLeast = (n: number, floor: number) => Math.max(n, floor);
 const list = (v: string | undefined) =>
   (v ?? '')
     .split(',')
@@ -151,11 +155,16 @@ export default (): AdminConfig => ({
     jwtSecret: process.env.ADMIN_JWT_SECRET ?? '',
     accessTtlSeconds: int(process.env.ADMIN_ACCESS_TTL, 15 * 60),
     refreshTtlSeconds: int(process.env.ADMIN_REFRESH_TTL, 12 * 60 * 60),
-    absoluteLifetimeSeconds: int(
-      process.env.ADMIN_SESSION_ABSOLUTE_TTL,
-      12 * 60 * 60,
+    // Floors, because both are in SECONDS and a value like 30 (meant as minutes) would
+    // expire a session in half a minute, before anyone finishes entering a 2FA code.
+    absoluteLifetimeSeconds: atLeast(
+      int(process.env.ADMIN_SESSION_ABSOLUTE_TTL, 12 * 60 * 60),
+      15 * 60,
     ),
-    idleTimeoutSeconds: int(process.env.ADMIN_SESSION_IDLE_TTL, 30 * 60),
+    idleTimeoutSeconds: atLeast(
+      int(process.env.ADMIN_SESSION_IDLE_TTL, 30 * 60),
+      5 * 60,
+    ),
     cookieDomain: process.env.ADMIN_COOKIE_DOMAIN || undefined,
     // 'strict' needs the console and API on one site. 'none' (requires Secure) lets a
     // console on a different site, e.g. two *.onrender.com hosts, keep its session.

@@ -23,6 +23,8 @@ export interface SessionRecord {
  * Session state lives in Redis under an admin-only key prefix. The cookie carries an
  * opaque id, so revoking a session is a delete rather than a token blacklist.
  */
+const PENDING_MIN_MS = 10 * 60_000;
+
 @Injectable()
 export class SessionService {
   private readonly logger = new Logger(SessionService.name);
@@ -41,6 +43,16 @@ export class SessionService {
 
   private staffIndexKey(staffId: string) {
     return this.redis.key('session-index', staffId);
+  }
+
+  /**
+   * Idle allowance. A session still waiting on its second factor gets at least ten
+   * minutes: first sign-in means scanning a QR code and finding the app, which is
+   * slower than the idle window of a session someone is actively using.
+   */
+  private idleMs(record: SessionRecord): number {
+    const idle = this.cfg.idleTimeoutSeconds * 1000;
+    return record.mfaVerified ? idle : Math.max(idle, PENDING_MIN_MS);
   }
 
   async create(input: {
@@ -83,7 +95,7 @@ export class SessionService {
       await this.revoke(sessionId, 'absolute_lifetime_reached');
       return null;
     }
-    if (now - record.lastSeenAt > this.cfg.idleTimeoutSeconds * 1000) {
+    if (now - record.lastSeenAt > this.idleMs(record)) {
       await this.revoke(sessionId, 'idle_timeout');
       return null;
     }
@@ -164,9 +176,15 @@ export class SessionService {
     // TTL tracks whichever clock expires first.
     const ttlMs = Math.min(
       record.absoluteExpiresAt - Date.now(),
-      this.cfg.idleTimeoutSeconds * 1000,
+      this.idleMs(record),
     );
-    if (ttlMs <= 0) return;
+    if (ttlMs <= 0) {
+      // Saving nothing would make sign-in look like it worked and then fail one
+      // request later with "session expired". Say so instead.
+      throw new Error(
+        `Refusing to store a session that has already expired (absolute lifetime ${this.cfg.absoluteLifetimeSeconds}s, idle ${this.cfg.idleTimeoutSeconds}s)`,
+      );
+    }
     await this.redis.client.set(
       this.sessionKey(record.sessionId),
       JSON.stringify(record),
