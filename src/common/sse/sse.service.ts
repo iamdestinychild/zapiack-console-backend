@@ -4,9 +4,11 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
-import { Observable, Subject, filter, map } from 'rxjs';
+import { Observable, Subject, filter, interval, map, merge } from 'rxjs';
 import type Redis from 'ioredis';
 import { RedisService } from '../redis/redis.service';
+
+const HEARTBEAT_MS = 15_000;
 
 export interface SseMessage {
   channel: string;
@@ -55,12 +57,22 @@ export class SseService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  /** Nest serialises `{ data, type }` as a text/event-stream frame. */
+  /**
+   * Nest serialises `{ data, type }` as a text/event-stream frame.
+   *
+   * A named `ping` goes out every 15 seconds. Proxies, Render's included, close a
+   * connection that stays silent for about a minute, and a quiet period on the map is
+   * exactly when that happens. Clients subscribe to named events, so they ignore it.
+   */
   subscribe(channel: string): Observable<{ data: unknown; type: string }> {
-    return this.stream$.pipe(
+    const messages = this.stream$.pipe(
       filter((message) => message.channel === channel),
       map((message) => ({ data: message.data, type: message.event })),
     );
+    const heartbeat = interval(HEARTBEAT_MS).pipe(
+      map(() => ({ data: {}, type: 'ping' })),
+    );
+    return merge(messages, heartbeat);
   }
 
   async onModuleDestroy() {

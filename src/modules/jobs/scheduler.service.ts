@@ -42,7 +42,7 @@ export class SchedulerService implements OnModuleInit {
     );
     await this.rollups.add(
       JOBS.rollRequests,
-      { windowMinutes: 10 },
+      {},
       {
         ...DEFAULT_JOB_OPTIONS,
         jobId: `requests-${now.toFormat('yyyy-LL-dd-HH-mm')}`,
@@ -85,6 +85,16 @@ export class SchedulerService implements OnModuleInit {
   @Cron(CronExpression.EVERY_30_MINUTES)
   async riskScan() {
     await this.rollups.add(JOBS.riskScan, {}, DEFAULT_JOB_OPTIONS);
+  }
+
+  /**
+   * Pulls applications from the product database into the review queue. The product
+   * writes them without telling this service, so the queue is only ever as complete as
+   * the last sync.
+   */
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async senderIdSync() {
+    await this.maintenance.add(JOBS.senderIdSync, {}, DEFAULT_JOB_OPTIONS);
   }
 
   /** Sender ID SLA timers; breaches become staff notifications. */

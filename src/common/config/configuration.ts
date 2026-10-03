@@ -159,9 +159,10 @@ export default (): AdminConfig => ({
     cookieDomain: process.env.ADMIN_COOKIE_DOMAIN || undefined,
     // 'strict' needs the console and API on one site. 'none' (requires Secure) lets a
     // console on a different site, e.g. two *.onrender.com hosts, keep its session.
-    sameSite: (['strict', 'lax', 'none'] as const).find(
-      (v) => v === (process.env.ADMIN_COOKIE_SAMESITE ?? '').toLowerCase(),
-    ) ?? ('strict' as const),
+    sameSite:
+      (['strict', 'lax', 'none'] as const).find(
+        (v) => v === (process.env.ADMIN_COOKIE_SAMESITE ?? '').toLowerCase(),
+      ) ?? ('strict' as const),
     secureCookies: bool(
       process.env.ADMIN_SECURE_COOKIES,
       process.env.NODE_ENV === 'production',

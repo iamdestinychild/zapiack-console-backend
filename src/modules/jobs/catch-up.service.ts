@@ -26,6 +26,7 @@ export class CatchUpService implements OnApplicationBootstrap {
   constructor(
     private readonly admin: AdminPrismaService,
     @InjectQueue(QUEUES.rollups) private readonly rollups: Queue,
+    @InjectQueue(QUEUES.maintenance) private readonly maintenance: Queue,
   ) {}
 
   async onApplicationBootstrap() {
@@ -61,6 +62,20 @@ export class CatchUpService implements OnApplicationBootstrap {
         JOBS.rollUsageCurrentDay,
         { day: today },
         { ...DEFAULT_JOB_OPTIONS, jobId: `usage-boot-${Date.now()}` },
+      );
+
+      // Request totals are rebuilt for the whole day each run; do it now rather than
+      // leaving the figure at whatever the last awake window happened to count.
+      await this.rollups.add(
+        JOBS.rollRequests,
+        {},
+        { ...DEFAULT_JOB_OPTIONS, jobId: `requests-boot-${Date.now()}` },
+      );
+
+      await this.maintenance.add(
+        JOBS.senderIdSync,
+        {},
+        { ...DEFAULT_JOB_OPTIONS, jobId: `sender-id-sync-boot-${Date.now()}` },
       );
 
       if (days.length) {

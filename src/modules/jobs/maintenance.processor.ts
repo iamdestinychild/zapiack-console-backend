@@ -42,6 +42,8 @@ export class MaintenanceProcessor extends WorkerHost {
         };
       case JOBS.geoipRefresh:
         return { reloaded: await this.geoip.load() };
+      case JOBS.senderIdSync:
+        return this.senderIds.syncFromProduct();
       case JOBS.slaSweep:
         return { overdue: await this.senderIds.sweepSlaBreaches() };
       default:

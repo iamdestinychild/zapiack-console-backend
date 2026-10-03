@@ -7,7 +7,7 @@ import { RollupsService } from '../rollups/rollups.service';
 import { ReconciliationService } from '../finance/reconciliation.service';
 import { ProviderHealthService } from '../services/provider-health.service';
 import { RiskService } from '../risk/risk.service';
-import { JOBS, QUEUES, type DayJobData, type WindowJobData } from './queues';
+import { JOBS, QUEUES, type DayJobData } from './queues';
 
 @Processor(QUEUES.rollups, { concurrency: 2 })
 export class RollupsProcessor extends WorkerHost {
@@ -29,10 +29,7 @@ export class RollupsProcessor extends WorkerHost {
         // delivery receipts change rows that an incremental window would have missed.
         const { day: isoDay } = job.data as DayJobData;
         const day = DateTime.fromISO(isoDay, { zone: LAGOS }).startOf('day');
-        const count = await this.rollups.rollUsage(
-          day.toJSDate(),
-          day.plus({ days: 1 }).toJSDate(),
-        );
+        const count = await this.rollups.rollCurrentDay(day.toJSDate());
         await this.rollups.markProcessed('usage.current_day', new Date());
         return { buckets: count };
       }
@@ -49,9 +46,14 @@ export class RollupsProcessor extends WorkerHost {
       }
 
       case JOBS.rollRequests: {
-        const minutes = (job.data as WindowJobData).windowMinutes ?? 10;
+        // The whole Lagos day, every time. Buckets are hourly and an upsert replaces
+        // the total, so a window starting mid-hour overwrote that hour with a partial
+        // count, and any stretch the process was asleep was never counted at all.
         const end = new Date();
-        const start = new Date(end.getTime() - minutes * 60_000);
+        const start = DateTime.fromJSDate(end)
+          .setZone(LAGOS)
+          .startOf('day')
+          .toJSDate();
         const count = await this.rollups.rollRequests(start, end);
         await this.rollups.markProcessed('requests', end);
         return { buckets: count };

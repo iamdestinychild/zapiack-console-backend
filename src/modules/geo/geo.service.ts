@@ -3,6 +3,7 @@ import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { lagosDateOnly, resolveRange } from '../../common/time/lagos';
 import { maskIp } from '../../common/http/masking';
+import { geocode } from '../../common/geo/geocode';
 import type { GeoRequestsDto, RequestLogDto } from './dto/geo.dto';
 
 /**
@@ -30,18 +31,49 @@ export class GeoService {
     if (groupBy === 'city') {
       // City is not a rollup dimension — the cardinality would be unmanageable — so
       // this reads the product's activity log, bounded by the range and a row limit.
+      // A request with no resolved city still counts, under its country.
       const rows = await this.zapiack.read.$queryRaw<
-        { country: string | null; city: string | null; total: bigint }[]
+        {
+          country: string | null;
+          city: string | null;
+          total: bigint;
+          clientErrors: bigint;
+          serverErrors: bigint;
+        }[]
       >`
-        SELECT "countryCode" AS country, "city", COUNT(*)::bigint AS total
+        SELECT "countryCode" AS country, "city",
+               COUNT(*)::bigint AS total,
+               COUNT(*) FILTER (WHERE "statusCode" BETWEEN 400 AND 499)::bigint AS "clientErrors",
+               COUNT(*) FILTER (WHERE "statusCode" >= 500)::bigint AS "serverErrors"
         FROM "api_activity_logs"
         WHERE "createdAt" >= ${start} AND "createdAt" <= ${end}
-          AND "city" IS NOT NULL
+          AND ("city" IS NOT NULL OR "countryCode" IS NOT NULL)
         GROUP BY "countryCode", "city"
         ORDER BY total DESC
         LIMIT ${dto.limit ?? 100}
       `;
-      return { range: { from: start, to: end }, groupBy, data: rows };
+      return {
+        range: { from: start, to: end },
+        groupBy,
+        data: rows.map((row) => {
+          const total = Number(row.total);
+          const serverErrors = Number(row.serverErrors);
+          const point = geocode(row.country, row.city);
+          return {
+            key: row.city ?? row.country ?? 'Unknown',
+            country: row.country,
+            city: row.city,
+            total,
+            clientErrors: Number(row.clientErrors),
+            serverErrors,
+            errorRate: total ? Number((serverErrors / total).toFixed(4)) : 0,
+            latencyP95Ms: null,
+            lat: point?.lat ?? null,
+            lng: point?.lng ?? null,
+            precision: point?.precision ?? null,
+          };
+        }),
+      };
     }
 
     const rows = await this.admin.requestRollup.groupBy({
@@ -74,6 +106,53 @@ export class GeoService {
           errorRate: total ? Number((serverErrors / total).toFixed(4)) : 0,
           latencyP95Ms: row._max.latencyP95Ms,
         };
+      }),
+    };
+  }
+
+  /**
+   * The last few minutes of requests with coordinates, so the map is populated the
+   * moment it opens. The live stream only carries what arrives afterwards.
+   */
+  async recentLive(minutes = 5, limit = 500) {
+    const since = new Date(Date.now() - minutes * 60_000);
+    const rows = await this.zapiack.read.apiActivityLog.findMany({
+      where: { createdAt: { gt: since } },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      select: {
+        createdAt: true,
+        endpoint: true,
+        method: true,
+        statusCode: true,
+        countryCode: true,
+        city: true,
+        region: true,
+        service: true,
+        projectId: true,
+      },
+    });
+    return {
+      since,
+      data: rows.flatMap((row) => {
+        const point = geocode(row.countryCode, row.city);
+        if (!point) return [];
+        return [
+          {
+            at: row.createdAt.toISOString(),
+            endpoint: row.endpoint,
+            method: row.method,
+            statusCode: row.statusCode,
+            service: row.service,
+            projectId: row.projectId,
+            country: row.countryCode,
+            region: row.region,
+            city: row.city,
+            lat: point.lat,
+            lng: point.lng,
+            precision: point.precision,
+          },
+        ];
       }),
     };
   }

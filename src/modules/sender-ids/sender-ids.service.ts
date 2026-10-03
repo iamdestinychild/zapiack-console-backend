@@ -50,7 +50,7 @@ export class SenderIdsService {
    * The product stores `status` as a free string starting at `DRAFT`; the review
    * record keeps a typed status of its own, so the two are mapped rather than shared.
    */
-  async ensureReview(applicationId: string) {
+  async ensureReview(applicationId: string, notify = true) {
     const existing = await this.admin.senderIdReview.findUnique({
       where: { applicationId },
     });
@@ -100,6 +100,8 @@ export class SenderIdsService {
       },
     });
 
+    if (!notify) return review;
+
     await this.notifications.broadcastToPermission('senderid.review', {
       type: 'senderid.submitted',
       severity: 'MEDIUM',
@@ -109,6 +111,60 @@ export class SenderIdsService {
     });
 
     return review;
+  }
+
+  /**
+   * Imports applications the product has that the console has no review for.
+   *
+   * The product creates these itself, so the `senderid.submitted` event this queue was
+   * built around never arrives. A handful of arrivals still notify reviewers; a large
+   * first import is silent apart from one summary, so the bell is not flooded.
+   */
+  async syncFromProduct() {
+    const [applications, reviews] = await Promise.all([
+      this.zapiack.read.senderIdApplication.findMany({
+        select: { id: true, status: true },
+      }),
+      this.admin.senderIdReview.findMany({ select: { applicationId: true } }),
+    ]);
+    const have = new Set(reviews.map((r) => r.applicationId));
+    const missing = applications.filter((a) => !have.has(a.id));
+
+    const unmapped: Record<string, number> = {};
+    let created = 0;
+    const loud = missing.length <= 5;
+
+    for (const application of missing) {
+      if (!toReviewStatus(application.status)) {
+        const key = application.status || '(empty)';
+        unmapped[key] = (unmapped[key] ?? 0) + 1;
+        continue;
+      }
+      try {
+        if (await this.ensureReview(application.id, loud)) created += 1;
+      } catch (err) {
+        // Two instances racing to import the same application: the other one won.
+        if ((err as { code?: string }).code !== 'P2002') throw err;
+      }
+    }
+
+    if (!loud && created > 0) {
+      await this.notifications.broadcastToPermission('senderid.review', {
+        type: 'senderid.submitted',
+        severity: 'MEDIUM',
+        title: `${created} sender ID applications imported`,
+        body: 'Existing applications were added to the review queue.',
+        link: '/sender-ids',
+      });
+    }
+    if (Object.keys(unmapped).length) {
+      // Visible rather than silent: an application in a status this console does not
+      // know about would otherwise just never appear.
+      this.logger.warn(
+        `Sender ID applications skipped, unrecognised status: ${JSON.stringify(unmapped)}`,
+      );
+    }
+    return { created, skipped: unmapped };
   }
 
   async list(query: ListSenderIdsDto) {
@@ -529,6 +585,9 @@ function toReviewStatus(productStatus: string): SenderIdStatus | null {
     PENDING: 'SUBMITTED',
     IN_REVIEW: 'IN_REVIEW',
     REVIEWING: 'IN_REVIEW',
+    UNDER_REVIEW: 'IN_REVIEW',
+    PENDING_REVIEW: 'SUBMITTED',
+    DECLINED: 'REJECTED',
     CHANGES_REQUESTED: 'CHANGES_REQUESTED',
     APPROVED: 'APPROVED',
     REJECTED: 'REJECTED',

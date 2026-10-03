@@ -3,6 +3,7 @@ import { DateTime } from 'luxon';
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { LAGOS, lagosDateOnly } from '../../common/time/lagos';
+import { Prisma } from '../../generated/zapiack/client';
 
 interface UsageBucket {
   date: Date;
@@ -50,30 +51,66 @@ export class RollupsService {
    * finalisation writes uses hour = -1 so the two never collide.
    */
   async rollUsage(start: Date, end: Date): Promise<number> {
-    const buckets = await this.zapiack.read.$queryRaw<UsageBucket[]>`
-      SELECT
-        ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${LAGOS})::date                                  AS date,
-        EXTRACT(HOUR FROM ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${LAGOS}))::int                 AS hour,
-        "channel"::text                                                            AS channel,
-        "accountId",
-        COALESCE("countryCode", 'UNKNOWN')                                  AS country,
-        COALESCE("operator", 'UNKNOWN')                                            AS provider,
-        COUNT(*)::bigint                                                           AS attempted,
-        COUNT(*) FILTER (WHERE "status" = 'DELIVERED')::bigint AS succeeded,
-        COUNT(*) FILTER (WHERE "status" = 'FAILED')::bigint                        AS failed,
-        COUNT(*)::bigint                                          AS units,
-        COALESCE(SUM("cost"), 0)::text                                    AS "revenueNgn",
-        '0'::text                                  AS "costNgn"
-      FROM "log_events"
-      WHERE "createdAt" >= ${start} AND "createdAt" < ${end}
-      GROUP BY 1, 2, 3, 4, 5, 6
-    `;
+    const buckets = await this.usageBuckets(start, end, false);
 
     await this.upsertUsageBuckets(buckets);
     this.logger.log(
       `Rolled ${buckets.length} usage buckets for ${start.toISOString()}..${end.toISOString()}`,
     );
     return buckets.length;
+  }
+
+  /**
+   * Usage buckets straight from the product's message log, with revenue taken from
+   * the credit ledger.
+   *
+   * `log_events.cost` is nullable and is not what the customer was charged: the charge
+   * is the `DEBIT` on `tab_transactions`, which one bulk request shares across all of
+   * its recipients. So each event carries its share of the debit, a debit that failed
+   * or was refunded counts for nothing, and an event with no ledger row falls back to
+   * its own `cost`.
+   */
+  private async usageBuckets(
+    start: Date,
+    end: Date,
+    daily: boolean,
+  ): Promise<UsageBucket[]> {
+    const local = Prisma.sql`("e"."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${LAGOS})`;
+    const hour = daily
+      ? Prisma.sql`-1`
+      : Prisma.sql`EXTRACT(HOUR FROM ${local})::int`;
+
+    return this.zapiack.read.$queryRaw<UsageBucket[]>`
+      WITH "e" AS (
+        SELECT
+          le."createdAt", le."channel", le."accountId", le."countryCode", le."operator", le."status",
+          CASE
+            WHEN tt."id" IS NULL THEN COALESCE(le."cost", 0)
+            WHEN tt."type" = 'DEBIT' AND tt."status" <> 'FAILED'
+              AND NOT EXISTS (SELECT 1 FROM "tab_transactions" r WHERE r."refundForId" = tt."id")
+              THEN tt."charge" / COUNT(*) OVER (PARTITION BY le."tabTransactionId")
+            ELSE 0
+          END AS "revenue"
+        FROM "log_events" le
+        LEFT JOIN "tab_transactions" tt ON tt."id" = le."tabTransactionId"
+        WHERE le."createdAt" >= ${start} AND le."createdAt" < ${end}
+      )
+      SELECT
+        (${local})::date                                         AS date,
+        ${hour}                                                  AS hour,
+        "e"."channel"::text                                      AS channel,
+        "e"."accountId"                                          AS "accountId",
+        COALESCE("e"."countryCode", 'UNKNOWN')                   AS country,
+        COALESCE("e"."operator", 'UNKNOWN')                      AS provider,
+        COUNT(*)::bigint                                         AS attempted,
+        COUNT(*) FILTER (WHERE "e"."status" = 'DELIVERED')::bigint AS succeeded,
+        COUNT(*) FILTER (WHERE "e"."status" = 'FAILED')::bigint  AS failed,
+        COUNT(*)::bigint                                         AS units,
+        COALESCE(SUM("e"."revenue"), 0)::text                    AS "revenueNgn",
+        '0'::text                                                AS "costNgn"
+      FROM "e"
+      GROUP BY 1, 2, 3, 4, 5, 6
+    `;
   }
 
   /**
@@ -87,24 +124,11 @@ export class RollupsService {
     // carrying an older stamp afterwards is a bucket whose source no longer exists.
     const runStartedAt = new Date();
 
-    const buckets = await this.zapiack.read.$queryRaw<UsageBucket[]>`
-      SELECT
-        ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${LAGOS})::date                                  AS date,
-        -1                                                                         AS hour,
-        "channel"::text                                                            AS channel,
-        "accountId",
-        COALESCE("countryCode", 'UNKNOWN')                                  AS country,
-        COALESCE("operator", 'UNKNOWN')                                            AS provider,
-        COUNT(*)::bigint                                                           AS attempted,
-        COUNT(*) FILTER (WHERE "status" = 'DELIVERED')::bigint AS succeeded,
-        COUNT(*) FILTER (WHERE "status" = 'FAILED')::bigint                        AS failed,
-        COUNT(*)::bigint                                          AS units,
-        COALESCE(SUM("cost"), 0)::text                                    AS "revenueNgn",
-        '0'::text                                  AS "costNgn"
-      FROM "log_events"
-      WHERE "createdAt" >= ${start.toJSDate()} AND "createdAt" < ${end.toJSDate()}
-      GROUP BY 1, 3, 4, 5, 6
-    `;
+    const buckets = await this.usageBuckets(
+      start.toJSDate(),
+      end.toJSDate(),
+      true,
+    );
 
     await this.upsertUsageBuckets(buckets, runStartedAt);
 
@@ -125,12 +149,46 @@ export class RollupsService {
     }
     await this.rollDestinations(day);
     await this.rollCash(day);
+    await this.rollRequests(start.toJSDate(), end.toJSDate());
     await this.snapshotFinance(day);
 
     this.logger.log(
       `Finalised ${buckets.length} daily usage buckets for ${start.toISODate()}`,
     );
     return buckets.length;
+  }
+
+  /**
+   * Today's picture: hourly rows for the charts and the daily row the KPIs sum.
+   *
+   * The daily row used to be written only by the nightly finalise, so every screen
+   * that reads it showed the day's figures as zero until after midnight.
+   */
+  async rollCurrentDay(day: Date): Promise<number> {
+    const start = DateTime.fromJSDate(day).setZone(LAGOS).startOf('day');
+    const end = start.plus({ days: 1 });
+    const runStartedAt = new Date();
+
+    const hourly = await this.rollUsage(start.toJSDate(), end.toJSDate());
+
+    const daily = await this.usageBuckets(
+      start.toJSDate(),
+      end.toJSDate(),
+      true,
+    );
+    await this.upsertUsageBuckets(daily, runStartedAt);
+    // Same replace-not-increment sweep as finalisation, so a row whose source has
+    // since gone does not linger for the rest of the day.
+    await this.admin.usageRollup.deleteMany({
+      where: {
+        date: lagosDateOnly(day),
+        hour: -1,
+        OR: [{ finalisedAt: null }, { finalisedAt: { lt: runStartedAt } }],
+      },
+    });
+    await this.rollDestinations(day);
+    await this.rollCash(day);
+    return hourly + daily.length;
   }
 
   private async upsertUsageBuckets(buckets: UsageBucket[], finalisedAt?: Date) {

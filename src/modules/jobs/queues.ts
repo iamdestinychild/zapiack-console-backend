@@ -15,6 +15,7 @@ export const JOBS = {
   providerHealth: 'provider-health',
   riskScan: 'risk-scan',
   slaSweep: 'sla-sweep',
+  senderIdSync: 'sender-id-sync',
   retention: 'retention',
   partitions: 'ensure-partitions',
   geoipRefresh: 'geoip-refresh',

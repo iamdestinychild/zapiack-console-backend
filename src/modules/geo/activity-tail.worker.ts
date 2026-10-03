@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { SseService } from '../../common/sse/sse.service';
 import { maskIp } from '../../common/http/masking';
+import { geocode } from '../../common/geo/geocode';
 import type { AdminConfig } from '../../common/config/configuration';
 
 /** How often the tail looks for new rows. The map's "under 5s" target allows this. */
@@ -86,20 +87,31 @@ export class ActivityTailWorker implements OnModuleInit, OnModuleDestroy {
       await this.sse.publish(
         'geo:live',
         'request',
-        sampled.map((row) => ({
-          at: row.createdAt.toISOString(),
-          endpoint: row.endpoint,
-          method: row.method,
-          statusCode: row.statusCode,
-          service: row.service,
-          projectId: row.projectId,
-          country: row.countryCode,
-          region: row.region,
-          city: row.city,
-          // Re-masked per viewer on the SSE route; masked here too so a raw address
-          // never sits in Redis.
-          ip: maskIp(row.ip),
-        })),
+        sampled.flatMap((row) => {
+          // The log has no coordinates; a dot with nowhere to go is dropped, not
+          // plotted at 0,0.
+          const point = geocode(row.countryCode, row.city);
+          if (!point) return [];
+          return [
+            {
+              at: row.createdAt.toISOString(),
+              lat: point.lat,
+              lng: point.lng,
+              precision: point.precision,
+              endpoint: row.endpoint,
+              method: row.method,
+              statusCode: row.statusCode,
+              service: row.service,
+              projectId: row.projectId,
+              country: row.countryCode,
+              region: row.region,
+              city: row.city,
+              // Re-masked per viewer on the SSE route; masked here too so a raw address
+              // never sits in Redis.
+              ip: maskIp(row.ip),
+            },
+          ];
+        }),
       );
     } catch (err) {
       this.logger.error(`Activity tail failed: ${(err as Error).message}`);

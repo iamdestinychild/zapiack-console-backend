@@ -19,6 +19,12 @@ export class GeoController {
     return this.geo.requests(query);
   }
 
+  /** Snapshot of the last few minutes, for the map to draw before the stream delivers. */
+  @Get('live/recent')
+  liveRecent() {
+    return this.geo.recentLive();
+  }
+
   @Get('signins')
   signIns(
     @Query() query: GeoRequestsDto,
