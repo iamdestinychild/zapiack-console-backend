@@ -90,7 +90,7 @@ async function bootstrap() {
   // Numbers and flags only. When sign-in misbehaves, this line settles whether the
   // deployed settings are what they were meant to be.
   logger.log(
-    `session: idle ${cfg.session.idleTimeoutSeconds}s, absolute ${cfg.session.absoluteLifetimeSeconds}s, sameSite ${cfg.session.sameSite}, secure ${cfg.session.secureCookies}, cookie domain ${cfg.session.cookieDomain ?? '(host only)'}`,
+    `session: idle ${cfg.session.idleTimeoutSeconds}s, absolute ${cfg.session.absoluteLifetimeSeconds}s, sameSite ${cfg.session.sameSite} (auto = per request), secure ${cfg.session.secureCookies}, cookie domain ${cfg.session.cookieDomain ?? '(host only)'}`,
   );
 }
 

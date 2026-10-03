@@ -48,7 +48,8 @@ export interface AdminConfig {
     absoluteLifetimeSeconds: number;
     idleTimeoutSeconds: number;
     cookieDomain?: string;
-    sameSite: 'strict' | 'lax' | 'none';
+    /** 'auto' picks Strict or None per request from where the console is. */
+    sameSite: 'strict' | 'lax' | 'none' | 'auto';
     secureCookies: boolean;
   };
 
@@ -166,12 +167,12 @@ export default (): AdminConfig => ({
       5 * 60,
     ),
     cookieDomain: process.env.ADMIN_COOKIE_DOMAIN || undefined,
-    // 'strict' needs the console and API on one site. 'none' (requires Secure) lets a
-    // console on a different site, e.g. two *.onrender.com hosts, keep its session.
+    // Unset means 'auto': Strict when the console and API share a site, None when they
+    // do not. Set strict, lax or none to force one.
     sameSite:
       (['strict', 'lax', 'none'] as const).find(
         (v) => v === (process.env.ADMIN_COOKIE_SAMESITE ?? '').toLowerCase(),
-      ) ?? ('strict' as const),
+      ) ?? ('auto' as const),
     secureCookies: bool(
       process.env.ADMIN_SECURE_COOKIES,
       process.env.NODE_ENV === 'production',

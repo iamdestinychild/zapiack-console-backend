@@ -11,6 +11,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
 import type { CookieOptions, Request, Response } from 'express';
+import { cookieScope } from '../../common/auth/cookie-scope';
 import { cookieValues } from '../../common/auth/session-cookie';
 import {
   CurrentStaff,
@@ -55,7 +56,7 @@ export class AuthController {
       userAgent: req.get('user-agent') ?? undefined,
     });
 
-    this.setSessionCookies(res, result.session);
+    this.setSessionCookies(req, res, result.session);
 
     return {
       status: 'totp_required',
@@ -81,7 +82,7 @@ export class AuthController {
       userAgent: req.get('user-agent') ?? undefined,
     });
 
-    this.setSessionCookies(res, session);
+    this.setSessionCookies(req, res, session);
     return { status: 'authenticated', csrfToken: session.csrfToken };
   }
 
@@ -89,10 +90,11 @@ export class AuthController {
   @HttpCode(204)
   async logout(
     @CurrentStaff() staff: StaffPrincipal,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
     await this.auth.logout(staff);
-    this.clearSessionCookies(res);
+    this.clearSessionCookies(req, res);
   }
 
   @Get('me')
@@ -137,40 +139,51 @@ export class AuthController {
 
   // ---------------------------------------------------------------- cookies
 
-  private cookieOptions(maxAgeMs: number): CookieOptions {
+  private cookieOptions(req: Request, maxAgeMs: number): CookieOptions {
+    const { domain, sameSite } = cookieScope(
+      {
+        domain: this.cfg.session.cookieDomain,
+        sameSite: this.cfg.session.sameSite,
+        secure: this.cfg.session.secureCookies,
+      },
+      req.hostname,
+      req.get('origin'),
+    );
     return {
       httpOnly: true,
       secure: this.cfg.session.secureCookies,
-      // Strict by default: the console is never embedded. Set ADMIN_COOKIE_SAMESITE=none
-      // only when the console and API are on different sites. CSRF tokens still apply.
-      sameSite: this.cfg.session.sameSite,
-      domain: this.cfg.session.cookieDomain,
+      sameSite,
+      domain,
       path: '/',
       maxAge: maxAgeMs,
     };
   }
 
-  private setSessionCookies(res: Response, session: SessionRecord) {
+  private setSessionCookies(
+    req: Request,
+    res: Response,
+    session: SessionRecord,
+  ) {
     const maxAge = session.absoluteExpiresAt - Date.now();
     res.cookie(
       this.cfg.session.accessCookie,
       session.sessionId,
-      this.cookieOptions(maxAge),
+      this.cookieOptions(req, maxAge),
     );
     // Readable by the frontend so it can echo the double-submit token on writes.
     res.cookie(this.cfg.session.csrfCookie, session.csrfToken, {
-      ...this.cookieOptions(maxAge),
+      ...this.cookieOptions(req, maxAge),
       httpOnly: false,
     });
   }
 
-  private clearSessionCookies(res: Response) {
-    const base = { ...this.cookieOptions(0), maxAge: undefined };
+  private clearSessionCookies(req: Request, res: Response) {
+    const base = { ...this.cookieOptions(req, 0), maxAge: undefined };
     res.clearCookie(this.cfg.session.accessCookie, base);
     res.clearCookie(this.cfg.session.csrfCookie, base);
     // A cookie set earlier under a different Domain is a different cookie and survives
     // the clear above, so clear the host-only variant too.
-    if (base.domain) {
+    {
       const hostOnly = { ...base, domain: undefined };
       res.clearCookie(this.cfg.session.accessCookie, hostOnly);
       res.clearCookie(this.cfg.session.csrfCookie, hostOnly);
