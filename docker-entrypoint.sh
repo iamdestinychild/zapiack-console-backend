@@ -13,7 +13,18 @@ set -eu
 
 if [ "${ADMIN_RUN_MIGRATIONS:-false}" = "true" ]; then
   echo "[entrypoint] applying Admin DB migrations"
-  npx prisma migrate deploy --config prisma.admin.config.ts
+  # Retried: a managed database that has just woken from idle can miss the first
+  # attempt. A real migration error fails all three and still stops the container.
+  attempt=1
+  until npx prisma migrate deploy --config prisma.admin.config.ts; do
+    if [ "$attempt" -ge 3 ]; then
+      echo "[entrypoint] migrations failed after $attempt attempts" >&2
+      exit 1
+    fi
+    echo "[entrypoint] migration attempt $attempt failed, retrying"
+    attempt=$((attempt + 1))
+    sleep 5
+  done
 fi
 
 exec node dist/main.js
