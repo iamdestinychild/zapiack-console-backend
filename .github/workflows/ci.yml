@@ -129,35 +129,33 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  config:
-    name: Caddy snippet and compose are valid
+  blueprint:
+    name: Render Blueprint is sane
     runs-on: ubuntu-latest
+    # Render reads render.yaml straight from the repo and deploys on a green run, so a
+    # broken Blueprint is a broken deploy. These are the settings that fail silently.
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate the Caddy site block
+      - name: Parses, and deploys only after CI passes
         run: |
-          docker run --rm -v "$PWD/deploy/caddy/admin-core.caddy:/etc/caddy/Caddyfile:ro" \
-            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+          yq -e '.services[] | select(.type == "web") | .autoDeployTrigger == "checksPass"' render.yaml
 
-      - name: Validate the production compose
-        env:
-          ADMIN_IMAGE: ghcr.io/example/admin-core:ci
-          DB_USERNAME: ci
-          DB_PASSWORD: ci
-          DB_NAME: zapiack_admin
-          REDIS_PASSWORD: ci
-        run: docker compose -f docker-compose.prod.yml config --quiet
-
-      - name: The stack must not publish ports 80 or 443
-        # The droplet's own Caddy owns them; a second listener would break it.
-        env:
-          ADMIN_IMAGE: ghcr.io/example/admin-core:ci
-          DB_USERNAME: ci
-          DB_PASSWORD: ci
-          DB_NAME: zapiack_admin
-          REDIS_PASSWORD: ci
+      - name: Key Value uses noeviction
+        # BullMQ loses queued jobs silently under any evicting policy.
         run: |
-          if docker compose -f docker-compose.prod.yml config | grep -E 'published: "(80|443)"'; then
-            echo "::error::docker-compose.prod.yml must not publish 80 or 443"; exit 1
-          fi
+          yq -e '.services[] | select(.type == "keyvalue") | .maxmemoryPolicy == "noeviction"' render.yaml
+
+      - name: Key Value is not reachable from the internet
+        run: |
+          yq -e '.services[] | select(.type == "keyvalue") | (.ipAllowList | length) == 0' render.yaml
+
+      - name: Migrations run at start, because free instances get no pre-deploy command
+        run: |
+          yq -e '.services[] | select(.type == "web") | .envVars[] | select(.key == "ADMIN_RUN_MIGRATIONS") | .value == "true"' render.yaml
+
+      - name: No secret is committed in the Blueprint
+        run: |
+          # Every credential must be `sync: false` (prompted) or generated, never a literal.
+          bad=$(yq '.services[].envVars[]? | select(.key | test("SECRET|TOKEN|PASSWORD|_URL|KEY")) | select(has("value")) | .key' render.yaml)
+          if [ -n "$bad" ]; then echo "::error::literal value for: $bad"; exit 1; fi

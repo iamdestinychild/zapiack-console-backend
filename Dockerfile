@@ -47,6 +47,7 @@ COPY --from=build /app/package.json ./package.json
 # Kept in the image so `migrate deploy` can run as a one-shot container from it.
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/prisma.admin.config.ts ./prisma.admin.config.ts
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
 
 # GeoLite2 is mounted at runtime, not baked in: it is licensed and refreshed weekly.
 RUN mkdir -p /app/data && chown -R node:node /app
@@ -57,5 +58,6 @@ EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
   CMD curl -fsS "http://127.0.0.1:${PORT}/health" || exit 1
 
-# Node is PID 1 here and handles SIGTERM itself; Nest's shutdown hooks drain on it.
-CMD ["node", "dist/main.js"]
+# The entrypoint `exec`s node, so node stays PID 1 and handles SIGTERM itself; Nest's
+# shutdown hooks drain on it.
+CMD ["./docker-entrypoint.sh"]

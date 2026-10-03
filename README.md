@@ -169,17 +169,15 @@ the shape of the API, never any data.
 
 ## Deploying
 
-One DigitalOcean droplet: the Caddy already on it proxies to a `web` container and a
-`worker` container, with Postgres and Redis alongside and a one-shot migration job that
-runs before either starts. GitHub Actions builds the image, pushes it to GHCR and
-restarts the stack on every push to `main`.
+Render, from GitHub. A Blueprint (`render.yaml`) describes the web service and a Key Value
+instance; the console is a static site with its own Blueprint in the dashboard repo. A
+push deploys only once the GitHub Actions run for that commit is green
+(`autoDeployTrigger: checksPass`), and the container applies migrations as it starts.
 
-```bash
-docker compose -f docker-compose.prod.yml up -d
-```
-
-Full instructions, including droplet setup, the GitHub secrets, rollback and backups:
-[docs/deployment.md](docs/deployment.md).
+Read [docs/deployment.md](docs/deployment.md) before the first deploy. Three Render
+limits shape this design and cost you something: a free web service sleeps after 15 idle
+minutes, free Postgres is deleted after 30 days (so the Admin DB must live elsewhere), and
+pre-deploy commands are paid-only.
 
 ## Testing
 

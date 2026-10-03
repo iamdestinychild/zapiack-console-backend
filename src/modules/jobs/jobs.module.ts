@@ -12,6 +12,7 @@ import { RiskModule } from '../risk/risk.module';
 import { RollupsModule } from '../rollups/rollups.module';
 import { SenderIdsModule } from '../sender-ids/sender-ids.module';
 import { ServicesModule } from '../services/services.module';
+import { CatchUpService } from './catch-up.service';
 import { ExportsProcessor } from './exports.processor';
 import { MaintenanceProcessor } from './maintenance.processor';
 import { RollupsProcessor } from './rollups.processor';
@@ -47,6 +48,7 @@ import { QUEUES } from './queues';
   ],
   providers: [
     SchedulerService,
+    CatchUpService,
     RollupsProcessor,
     MaintenanceProcessor,
     ExportsProcessor,

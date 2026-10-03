@@ -1,0 +1,90 @@
+# Render Blueprint for admin-core.
+#
+# New > Blueprint > pick this repo. Render reads this file, creates the two services,
+# and prompts for every value marked `sync: false`. See docs/deployment.md.
+#
+# What is deliberately NOT here: a Postgres. Render's free Postgres is deleted 30 days
+# after creation, and the Admin DB holds staff, roles, the audit log and every review
+# decision. Point ADMIN_DATABASE_URL at a durable database (Neon's free tier does not
+# expire) or add a paid Render Postgres.
+
+services:
+  - type: web
+    name: zapiack-admin-core
+    runtime: docker
+    region: frankfurt # nearest to Lagos of Render's regions
+    # `free` sleeps after 15 minutes without traffic, which pauses the in-process
+    # schedulers and drops the live streams. The catch-up on boot recovers missed
+    # nightly work, but nothing can run while it is asleep. For an always-on instance
+    # change this to `0.5c-512mb` (the cheapest paid plan).
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    # Deploy only once the GitHub Actions CI run for the commit has passed.
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # One process does everything: web, schedulers and queue consumers. A separate
+      # worker is a paid Render service and this app fits comfortably in one.
+      - key: ADMIN_ROLE
+        value: all
+      # Render does not run a pre-deploy command on free instances, so the container
+      # applies migrations itself at start. See docker-entrypoint.sh.
+      - key: ADMIN_RUN_MIGRATIONS
+        value: "true"
+      - key: ADMIN_TIMEZONE
+        value: Africa/Lagos
+      - key: ADMIN_SECURE_COOKIES
+        value: "true"
+      - key: ADMIN_JWT_SECRET
+        generateValue: true
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: zapiack-admin-redis
+          property: connectionString
+
+      # --- yours to provide -------------------------------------------------
+      # The console's exact origin, e.g. https://console.example.com. No wildcard.
+      - key: ADMIN_CORS_ORIGIN
+        sync: false
+      # The parent domain shared by the console and this API, e.g. example.com. The
+      # session cookie is SameSite=Strict, so the two must be on the same site.
+      - key: ADMIN_COOKIE_DOMAIN
+        sync: false
+      - key: ADMIN_DATABASE_URL
+        sync: false
+      - key: ZAPIACK_READ_DATABASE_URL
+        sync: false
+      - key: ZAPIACK_WRITE_DATABASE_URL
+        sync: false
+      - key: API_CORE_BASE_URL
+        sync: false
+      - key: API_CORE_SERVICE_TOKEN
+        sync: false
+      - key: API_CORE_SIGNING_SECRET
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_EXPORT_BUCKET
+        sync: false
+      - key: SES_FROM_ADDRESS
+        sync: false
+
+  # Sessions, the job queues and live-stream fan-out. Free Key Value is in-memory only,
+  # so a restart signs everyone out and drops queued jobs; the rollups recompute from
+  # source, so nothing durable is lost.
+  - type: keyvalue
+    name: zapiack-admin-redis
+    region: frankfurt # must match the web service for the private network
+    plan: free
+    # BullMQ needs noeviction: evicting a queued job loses it silently.
+    maxmemoryPolicy: noeviction
+    # Empty: reachable only from services in this workspace, never from the internet.
+    ipAllowList: []

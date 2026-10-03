@@ -83,6 +83,9 @@ export class RollupsService {
   async finaliseDay(day: Date): Promise<number> {
     const start = DateTime.fromJSDate(day).setZone(LAGOS).startOf('day');
     const end = start.plus({ days: 1 });
+    // Every bucket this run writes is stamped with this instant, so anything left
+    // carrying an older stamp afterwards is a bucket whose source no longer exists.
+    const runStartedAt = new Date();
 
     const buckets = await this.zapiack.read.$queryRaw<UsageBucket[]>`
       SELECT
@@ -103,7 +106,23 @@ export class RollupsService {
       GROUP BY 1, 3, 4, 5, 6
     `;
 
-    await this.upsertUsageBuckets(buckets, new Date());
+    await this.upsertUsageBuckets(buckets, runStartedAt);
+
+    // Recomputing from source has to mean REPLACING the day, not just overwriting the
+    // buckets that still exist: rows deleted or corrected upstream would otherwise
+    // keep their old totals forever, and the day would never reconcile again.
+    const swept = await this.admin.usageRollup.deleteMany({
+      where: {
+        date: lagosDateOnly(day),
+        hour: -1,
+        OR: [{ finalisedAt: null }, { finalisedAt: { lt: runStartedAt } }],
+      },
+    });
+    if (swept.count) {
+      this.logger.warn(
+        `Removed ${swept.count} stale bucket(s) for ${start.toISODate()}; their source rows are gone`,
+      );
+    }
     await this.rollDestinations(day);
     await this.rollCash(day);
     await this.snapshotFinance(day);
@@ -154,6 +173,7 @@ export class RollupsService {
   async rollDestinations(day: Date): Promise<number> {
     const start = DateTime.fromJSDate(day).setZone(LAGOS).startOf('day');
     const end = start.plus({ days: 1 });
+    const runStartedAt = new Date();
 
     const rows = await this.zapiack.read.$queryRaw<
       {
@@ -205,6 +225,10 @@ export class RollupsService {
         ),
       );
     }
+    // Anything the run did not touch has a stale `updatedAt` and no source behind it.
+    await this.admin.destinationRollup.deleteMany({
+      where: { date: lagosDateOnly(day), updatedAt: { lt: runStartedAt } },
+    });
     return rows.length;
   }
 

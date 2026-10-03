@@ -1,216 +1,124 @@
-# Deploying admin-core
+# Deploying admin-core on Render
 
-One DigitalOcean droplet. The **Caddy that already runs on it** terminates TLS and proxies
-to admin-core; this stack does not bring a Caddy of its own. GitHub Actions builds the
-image, pushes it to GHCR, copies the compose file over and restarts the stack on every
-push to `main`.
+Two Blueprints, one per repo. Render builds from GitHub, and **GitHub Actions gates it**:
+the web service uses `autoDeployTrigger: checksPass`, so a push deploys only after the CI
+run for that commit is green. There is no SSH, no registry and no deploy secret to manage.
 
-```
-                 :443 / :80
-                     |
-              +------v------+
-              | host Caddy  |   already installed, configured by hand
-              +------+------+
-                     | 127.0.0.1:3001   (loopback only)
-   +-----------------v--------------------------------------+
-   |  docker compose  (network: admin_net, nothing else      |
-   |                   published)                            |
-   |   web :3001   worker :3002   postgres   redis           |
-   +---------------------------------------------------------+
-```
+| Piece | Where | Cost |
+| --- | --- | --- |
+| admin-core (API + schedulers + queue consumers, one process) | Render web service | free, or the cheapest paid plan |
+| Redis (sessions, queues, live-stream fan-out) | Render Key Value | free |
+| Console frontend | Render static site | free |
+| **Admin DB** | **a durable Postgres you bring** | free tier of Neon or similar |
+| Zapiack product DB | where it already lives | unchanged |
 
-`web` serves HTTP. `worker` runs schedulers, queue processors and the activity-log tail.
-They are the same image with a different `ADMIN_ROLE`. A one-shot `migrate` container runs
-`prisma migrate deploy` to completion before either starts.
+## The three limits that shaped this, and what they cost you
 
-**The stack publishes exactly one port, `127.0.0.1:3001`.** Ports 80 and 443 belong to
-your Caddy, and CI fails if the compose file ever tries to claim them.
+These come from Render's documentation, read on 3 Oct 2026. Check them again before relying
+on them; pricing pages change.
 
-## Sizing
+**A free web service sleeps after 15 minutes without traffic** and takes about a minute to
+wake. Everything in admin-core's schedule (five-minute rollups, the nightly finalise, SLA
+alerts) is in-process, so none of it runs while asleep. Two things soften this: on every
+start admin-core looks at how far the nightly finalise got and re-queues any days it missed
+(`catch-up.service.ts`), so a sleep or a deploy over midnight loses nothing durable; and the
+live map and staff inbox simply reconnect. What it cannot do is *act* while asleep, so SLA
+breach alerts will be late. Free instances also get 750 hours a month per workspace.
+If that matters, set `plan: 0.5c-512mb` in `render.yaml` (the cheapest paid plan).
 
-A 2 vCPU / 4 GB droplet is enough for an internal console at the PRD's 99.5% target.
-Postgres and Redis share it. The thing that will outgrow the box first is the raw
-request log at high traffic — the PRD's own guidance is to move it to ClickHouse past
-roughly 20 million requests a day, and the read path is already isolated behind
-`GET /geo/*` so that swap does not touch the API.
+**Render's free Postgres is deleted 30 days after creation** (with a 14-day grace period).
+The Admin DB holds staff, roles, the append-only audit log and every sender ID decision,
+none of it recoverable from the product database. Do not put it there. Use a database that
+does not expire, and set `ADMIN_DATABASE_URL` to it.
+
+**Pre-deploy commands are paid-only**, so migrations run when the container starts
+(`ADMIN_RUN_MIGRATIONS=true`, see `docker-entrypoint.sh`). `migrate deploy` is idempotent
+and takes an advisory lock. A failed migration stops the container, and Render keeps the
+previous deploy serving until the new one passes its health check.
+
+Free Key Value is in-memory only, so a restart signs everyone out and drops queued jobs.
+Rollups recompute from source, so nothing durable is lost.
 
 ## First-time setup
 
-**1. DNS before anything else.** Point the admin API hostname at the droplet,
-`134.209.177.140`, and let it propagate. Caddy requests a certificate the first time it
-serves the name; a wrong record makes it fail and back off, and Let's Encrypt rate-limits
-repeated failures.
+**1. A durable Admin DB.** Create a Postgres that does not expire (Neon's free tier works)
+and keep its connection string for step 3. It needs the `uuid`-free defaults only; the
+migrations create everything, including the audit-log triggers.
 
-**2. Prepare the droplet.**
+**2. Push both repos to GitHub.** The dashboard is not a git repository yet:
+`git init`, commit, and push it to its own repo.
 
-```bash
-ssh root@<droplet>
+**3. Create the backend from the Blueprint.** Render dashboard, New, Blueprint, choose
+`zapiack-console-backend`. Render creates the web service and the Key Value instance and
+prompts for every value marked `sync: false` in `render.yaml`:
 
-# Docker
-curl -fsSL https://get.docker.com | sh
-
-# A non-root deploy user
-adduser --disabled-password --gecos "" deploy
-usermod -aG docker deploy
-mkdir -p /home/deploy/.ssh && cp ~/.ssh/authorized_keys /home/deploy/.ssh/
-chown -R deploy:deploy /home/deploy/.ssh && chmod 700 /home/deploy/.ssh
-
-# Only SSH and HTTP(S). Postgres and Redis are not published by compose, but a
-# firewall is the thing that makes that true rather than merely intended.
-ufw allow OpenSSH && ufw allow 80 && ufw allow 443 && ufw --force enable
-```
-
-**3. Lay out the app directory** at whatever you set `DROPLET_PATH` to, e.g.
-`/srv/admin-core`, owned by `deploy`:
-
-```
-/srv/admin-core/
-├── docker-compose.prod.yml   # copied by the deploy workflow on every run
-├── .env                      # NOT from the repo — see below
-└── data/
-    └── GeoLite2-City.mmdb    # licensed, downloaded separately
-```
-
-**4. Write `.env` on the droplet.** Copy `.env.example` and set real values. Never
-commit it. The ones with no safe default:
-
-| Variable | Notes |
+| Variable | Value |
 | --- | --- |
-| `ADMIN_CORS_ORIGIN` | the console frontend origin, exactly — no wildcard |
-| `ADMIN_JWT_SECRET` | `openssl rand -base64 48` |
-| `DB_PASSWORD`, `REDIS_PASSWORD` | generate, do not reuse |
-| `API_CORE_SERVICE_TOKEN`, `API_CORE_SIGNING_SECRET` | shared with api-core |
-| `S3_*`, `SES_*`, `SMS_CORE_*` | the real buckets and credentials |
-| `ADMIN_SECURE_COOKIES` | `true` |
-| `NODE_ENV` | `production` — boot fails fast if required secrets are missing |
+| `ADMIN_DATABASE_URL` | the durable Postgres from step 1 |
+| `ZAPIACK_READ_DATABASE_URL` | the product DB, through a SELECT-only role |
+| `ZAPIACK_WRITE_DATABASE_URL` | the product DB, through a role that can write `products`, `product_pricing`, `plans`, `accounts`, `api_keys`, `projects` and `sender_id_applications`, and **nothing else** |
+| `API_CORE_BASE_URL`, `API_CORE_SERVICE_TOKEN`, `API_CORE_SIGNING_SECRET` | shared with api-core |
+| `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_EXPORT_BUCKET`, `SES_FROM_ADDRESS` | exports and email |
+| `ADMIN_CORS_ORIGIN` | the console's exact origin, e.g. `https://console.example.com` |
+| `ADMIN_COOKIE_DOMAIN` | the shared parent domain, e.g. `example.com` |
 
-The connection hosts inside compose are service names, not `localhost`:
+`ADMIN_JWT_SECRET` is generated for you. The product database must accept connections from
+Render: allow its outbound addresses (Render lists them per region) wherever that database
+is firewalled.
 
-```
-ADMIN_DATABASE_URL=postgresql://<user>:<pass>@postgres:5432/zapiack_admin
-ZAPIACK_READ_DATABASE_URL=postgresql://<user>:<pass>@<product replica host>:5432/zapiack
-REDIS_URL=redis://:<pass>@redis:6379
-```
+**4. Create the console.** New, Blueprint, choose the dashboard repo. Set
+`VITE_API_BASE_URL` to the API's public URL. It is baked into the bundle at build time, so
+changing it means a rebuild.
 
-`ZAPIACK_READ_DATABASE_URL` is the one that points **off** this droplet, at the product
-read replica, through a role holding `SELECT` and nothing else.
+**5. Custom domains, on the same parent.** Add `api.example.com` to the web service and
+`console.example.com` to the static site, and create the CNAME records Render shows you.
+Hobby workspaces include two custom domains, which is exactly this. **This is not
+optional**: the session cookie is `SameSite=Strict`, so a console on one site and an API on
+another never stays signed in. The `*.onrender.com` addresses will not work with each other.
 
-**5. Add the site to your Caddy.** Copy the block from `deploy/caddy/admin-core.caddy` into
-the droplet's Caddyfile (or into a file it imports), change the hostname, then:
-
-```bash
-sudo caddy validate --config /etc/caddy/Caddyfile
-sudo systemctl reload caddy
-```
-
-It has no global options block on purpose — a Caddyfile may only have one. It does carry
-the two things this service needs that a plain `reverse_proxy` would break: the live map
-and staff inbox are long-lived event streams and must not be buffered, and sender ID zips
-stream for minutes.
-
-*Assumes Caddy runs on the host. If it runs in Docker, `127.0.0.1:3001` is the
-container's own loopback, not the droplet's — attach it to `admin_net` and proxy to
-`admin_core_web:3001` instead.*
-
-**6. GeoLite2.** Download `GeoLite2-City.mmdb` into `./data/`. Without it the service
-still runs; locations read as unknown and `/health/ready` reports `geoip: false`. A
-weekly job reloads it in place, so refreshing the file needs no restart.
-
-**7. First deploy.** Push to `main`, or run the workflow manually. Then seed the roles
-and the first super admin, once:
+**6. Seed the first super admin, once.** From Render's Shell tab on the web service:
 
 ```bash
-docker compose -f docker-compose.prod.yml run --rm \
-  -e ADMIN_SEED_EMAIL=you@zapiack.com \
-  -e ADMIN_SEED_PASSWORD='<a long one>' \
-  admin-core node dist/seed.js
+ADMIN_SEED_EMAIL=you@example.com ADMIN_SEED_PASSWORD='<a long one>' node dist/seed.js
 ```
 
-Everyone else is invited from the console. There is no self-registration.
-
-## GitHub secrets
-
-Set under Settings → Secrets → Actions. The `deploy` job also uses a `production`
-environment, so you can require a reviewer there if you want a manual gate.
-
-| Secret | Value |
-| --- | --- |
-| `DROPLET_HOST` | IPv4 or hostname |
-| `DROPLET_USER` | `deploy` |
-| `DROPLET_SSH_KEY` | private key whose public half is in `~deploy/.ssh/authorized_keys` |
-| `DROPLET_PATH` | e.g. `/srv/admin-core` |
-
-`GITHUB_TOKEN` is provided automatically and is what pushes to and pulls from GHCR.
+(Render's Shell is available on paid instances. On free, run the seed from your own machine
+against the Admin DB: `ADMIN_DATABASE_URL=... node dist/seed.js` after `npm run build`.)
 
 ## What a deploy does
 
-1. Builds the image and pushes it to GHCR tagged with the commit SHA and `latest`.
-2. Copies `docker-compose.prod.yml` to the droplet, pins `ADMIN_IMAGE` in `.env` to that exact SHA, and pulls.
-3. `docker compose up -d` — the `migrate` container runs to completion first; `web` and
-   `worker` only start once it exits cleanly.
-4. Polls `/health/ready` for up to 150 seconds and fails the run if it never reports
-   ready, printing the last 80 log lines.
+1. You push. GitHub Actions runs lint, typecheck, tests, the migration replay and the
+   Blueprint checks.
+2. Render waits for that run. Green: it builds the Docker image from `Dockerfile`.
+3. The new container starts, applies pending migrations, boots, and must pass `/health`.
+4. Render switches traffic. If any step fails, the previous deploy keeps serving.
 
-Pinning to the SHA rather than `latest` is what makes a restart reproducible and a
-rollback exact.
-
-## Rolling back
-
-```bash
-ssh deploy@<droplet> && cd /srv/admin-core
-sed -i 's|^ADMIN_IMAGE=.*|ADMIN_IMAGE=ghcr.io/<org>/<repo>:<previous-sha>|' .env
-docker compose -f docker-compose.prod.yml up -d
-```
-
-Code rolls back cleanly. **Migrations do not** — `migrate deploy` only moves forward.
-A release that changes the schema destructively needs a compensating migration, not a
-rollback. The expand-then-contract habit is worth keeping: add the column, deploy,
-backfill, drop the old one in a later release.
-
-## Backups
-
-Nothing here backs up the database; set that up before the console holds anything you
-care about. The Admin DB is the source of truth for staff, roles, the audit log and
-every review decision — none of it is reconstructible from the product database.
-
-```bash
-# Nightly dump, 30 days, matching the PRD's recovery target.
-0 2 * * * docker exec admin_postgres pg_dump -U <user> zapiack_admin \
-  | gzip > /srv/backups/admin-$(date +\%F).sql.gz
-```
-
-Ship those off the droplet — DigitalOcean Spaces or S3 — and test a restore. A backup
-nobody has restored is a hypothesis. DigitalOcean's own droplet snapshots are a useful
-second layer but are not point-in-time.
+Roll back from the Render dashboard: Events, then Rollback on a previous deploy. **Code
+rolls back; migrations do not** (`migrate deploy` only moves forward). A destructive schema
+change needs a compensating migration. Add the column, deploy, backfill, and drop the old
+one in a later release.
 
 ## Operating it
 
-**Logs.** `docker compose -f docker-compose.prod.yml logs -f admin-core`. JSON, with a
-`requestId` that matches the one the API returns to the console and the one api-core
-logs, so a staff member quoting an error id is enough to find the request end to end.
-Caddy's access log is wherever the droplet's Caddy writes it (`journalctl -u caddy` by default).
+**Is it healthy?** `GET /health/ready` reports each dependency separately.
+`GET /admin/v1/overview/health` reports rollup lag per job; past 15 minutes the schedulers
+are not running, which on the free plan usually just means it was asleep.
 
-**Is it healthy?** `/health/ready` reports each dependency separately. `GET
-/admin/v1/overview/health` reports rollup lag per job — past 15 minutes, something is
-wrong with the worker rather than with the data.
+**Logs** are in the Render dashboard, structured, with a `requestId` that matches what the
+API returns to the console and what api-core logs.
 
-**Certificates** are Caddy's, renewed by the instance already on the droplet.
+**Backups.** Nothing here backs up the Admin DB. Use your Postgres host's backups and test
+a restore; a backup nobody has restored is a hypothesis.
 
-**Scaling past one droplet.** Web and worker already run as separate containers, so the
-first move is more web containers behind Caddy. The scheduler uses deterministic job
-ids and the rollups are idempotent, so a second worker is safe, but there is no reason
-to run one until the queue actually backs up.
+**GeoIP.** Free instances have no persistent disk, so there is no GeoLite2 file and
+locations read as unknown. `/health/ready` reports `geoip: false`; everything else works.
 
 ## Things that will catch you out
 
-- **Caddy needs DNS first.** Serving a new name before its record resolves burns Let's
-  Encrypt attempts.
-- **`.env` lives only on the droplet.** It is gitignored and nothing in CI writes it. A
-  fresh droplet with no `.env` will fail at boot with a list of missing variables,
-  which is the intended behaviour.
-- **The worker binds HTTP too**, on 3002, purely so its container healthcheck has
-  something to answer. Nothing routes to it and its port is not published.
-- **Compose volumes are named after the directory.** Running `docker-compose.yml` and
-  `docker-compose.prod.yml` from the same folder shares `postgres_data` between them.
-  On the droplet only the production file is ever used; locally, be aware the dev stack
-  and a local production run are looking at the same disk.
+- **A sleeping API looks like an outage.** The first request after 15 idle minutes takes
+  about a minute. Staff will notice. A paid plan removes it.
+- **`VITE_API_BASE_URL` is compile-time.** Change it and you must redeploy the console.
+- **A new migration plus a long-running deploy over midnight** is safe, because the catch-up
+  re-queues anything the nightly job missed.
+- **The Blueprint's `sync: false` values are prompted once.** Changing them later is done in
+  the Render dashboard, not by editing `render.yaml`.
