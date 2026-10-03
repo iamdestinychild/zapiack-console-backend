@@ -17,6 +17,8 @@ import { PlansService } from './plans.service';
 import { CatalogueService } from './catalogue.service';
 import { ReasonDto } from '../../common/dto/common.dto';
 import {
+  PlanVisibilityDto,
+  UpdatePlanDto,
   UpsertPlanDto,
   UpsertProductDto,
   UpsertProductPricingDto,
@@ -51,14 +53,26 @@ export class PlansController {
     return this.catalogue.upsertPlan(staff, dto);
   }
 
+  /** Partial edit: only the fields sent change. Needs a `reason`. */
   @Patch('plans/:id')
   @RequirePermissions('plans.manage')
   updatePlan(
     @CurrentStaff() staff: StaffPrincipal,
     @Param('id') id: string,
-    @Body() dto: UpsertPlanDto,
+    @Body() dto: UpdatePlanDto,
   ) {
-    return this.catalogue.upsertPlan(staff, { ...dto, id });
+    return this.catalogue.updatePlan(staff, id, dto);
+  }
+
+  /** Make a plan public (offered at signup) or private (hidden from new customers). */
+  @Post('plans/:id/visibility')
+  @RequirePermissions('plans.manage')
+  setPlanVisibility(
+    @CurrentStaff() staff: StaffPrincipal,
+    @Param('id') id: string,
+    @Body() dto: PlanVisibilityDto,
+  ) {
+    return this.catalogue.setPlanVisibility(staff, id, dto);
   }
 
   @Post('plans/:id/retire')

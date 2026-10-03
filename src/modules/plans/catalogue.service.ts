@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -7,7 +8,10 @@ import { AuditService } from '../../common/audit/audit.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { ZapiackWriteService } from '../../common/prisma/zapiack-write.service';
 import type { StaffPrincipal } from '../../common/auth/staff-principal';
+import { planChanges } from './plan-update';
 import type {
+  PlanVisibilityDto,
+  UpdatePlanDto,
   UpsertPlanDto,
   UpsertProductDto,
   UpsertProductPricingDto,
@@ -212,6 +216,95 @@ export class CatalogueService {
     });
 
     return plan;
+  }
+
+  /**
+   * Edits the fields sent and nothing else. Unlike {@link upsertPlan} this never
+   * rebuilds the row from defaults, so a price change cannot flip visibility.
+   */
+  async updatePlan(actor: StaffPrincipal, planId: string, dto: UpdatePlanDto) {
+    const before = await this.zapiack.read.plans.findUnique({
+      where: { id: planId },
+    });
+    if (!before) throw new NotFoundException('Plan not found');
+
+    const changes = planChanges(before, dto);
+    if (!Object.keys(changes).length) {
+      throw new BadRequestException('Nothing to change: no field differs.');
+    }
+
+    if (changes.slug) {
+      const clash = await this.zapiack.read.plans.findUnique({
+        where: { slug: changes.slug },
+      });
+      if (clash && clash.id !== planId) {
+        throw new ConflictException(
+          `A plan already uses the slug "${changes.slug}"`,
+        );
+      }
+    }
+
+    const plan = await this.writer.write.plans.update({
+      where: { id: planId },
+      data: changes,
+    });
+
+    const subscribers = await this.zapiack.read.subscriptions.count({
+      where: { planId, status: 'ACTIVE' },
+    });
+    const beforeChanged = Object.fromEntries(
+      Object.keys(changes).map((k) => [k, before[k as keyof typeof before]]),
+    );
+    await this.audit.record({
+      actor,
+      action: 'plans.updated',
+      targetType: 'plan',
+      targetId: planId,
+      reason: dto.reason,
+      before: beforeChanged,
+      after: changes,
+      metadata: { activeSubscribers: subscribers },
+    });
+
+    return { ...plan, activeSubscribers: subscribers };
+  }
+
+  /**
+   * Public plans are offered at signup; a private plan still works for the customers
+   * on it and can be assigned by hand. Nobody is moved either way.
+   */
+  async setPlanVisibility(
+    actor: StaffPrincipal,
+    planId: string,
+    dto: PlanVisibilityDto,
+  ) {
+    const before = await this.zapiack.read.plans.findUnique({
+      where: { id: planId },
+    });
+    if (!before) throw new NotFoundException('Plan not found');
+    if (dto.isPublic && !before.isActive) {
+      throw new BadRequestException(
+        'A retired plan cannot be made public. Reactivate it first.',
+      );
+    }
+    if (before.isPublic === dto.isPublic) {
+      return { id: before.id, isPublic: before.isPublic, changed: false };
+    }
+
+    const plan = await this.writer.write.plans.update({
+      where: { id: planId },
+      data: { isPublic: dto.isPublic },
+    });
+    await this.audit.record({
+      actor,
+      action: dto.isPublic ? 'plans.made_public' : 'plans.made_private',
+      targetType: 'plan',
+      targetId: planId,
+      reason: dto.reason,
+      before: { isPublic: before.isPublic },
+      after: { isPublic: plan.isPublic },
+    });
+    return { id: plan.id, isPublic: plan.isPublic, changed: true };
   }
 
   /**

@@ -30,6 +30,13 @@ export class SenderIdsController {
     return this.senderIds.list(query);
   }
 
+  /** Applications the product holds that are not in the queue: drafts and unknown statuses. */
+  @Get('unfiled')
+  @RequirePermissions('senderid.review')
+  unfiled() {
+    return this.senderIds.unfiled();
+  }
+
   @Get(':id')
   @RequirePermissions('senderid.review')
   get(@Param('id') id: string) {

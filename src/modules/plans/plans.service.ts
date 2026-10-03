@@ -24,10 +24,24 @@ export class PlansService {
   ) {}
 
   async listPlans() {
-    const data = await this.zapiack.read.plans.findMany({
-      orderBy: { name: 'asc' },
-      include: { _count: { select: { subscriptions: true } } },
-    });
+    const [plans, active] = await Promise.all([
+      this.zapiack.read.plans.findMany({
+        orderBy: { name: 'asc' },
+        include: { _count: { select: { subscriptions: true } } },
+      }),
+      this.zapiack.read.subscriptions.groupBy({
+        by: ['planId'],
+        where: { status: 'ACTIVE' },
+        _count: { _all: true },
+      }),
+    ]);
+    const activeByPlan = new Map(active.map((r) => [r.planId, r._count._all]));
+    // `subscriptions` counts every subscription ever; `activeSubscribers` is who is on
+    // the plan now, which is what matters before changing its price or retiring it.
+    const data = plans.map((plan) => ({
+      ...plan,
+      activeSubscribers: activeByPlan.get(plan.id) ?? 0,
+    }));
     return { data, hasMore: false, nextCursor: null };
   }
 

@@ -123,11 +123,19 @@ export class SenderIdsService {
   async syncFromProduct() {
     const [applications, reviews] = await Promise.all([
       this.zapiack.read.senderIdApplication.findMany({
-        select: { id: true, status: true },
+        select: {
+          id: true,
+          status: true,
+          reviewedAt: true,
+          rejectionReason: true,
+        },
       }),
-      this.admin.senderIdReview.findMany({ select: { applicationId: true } }),
+      this.admin.senderIdReview.findMany({
+        select: { id: true, applicationId: true, status: true },
+      }),
     ]);
     const have = new Set(reviews.map((r) => r.applicationId));
+    const refreshed = await this.refreshDrifted(applications, reviews);
     const missing = applications.filter((a) => !have.has(a.id));
 
     const unmapped: Record<string, number> = {};
@@ -164,30 +172,96 @@ export class SenderIdsService {
         `Sender ID applications skipped, unrecognised status: ${JSON.stringify(unmapped)}`,
       );
     }
-    return { created, skipped: unmapped };
+    return { created, refreshed, skipped: unmapped };
+  }
+
+  /**
+   * The product moves applications along by itself (a customer resubmits after changes
+   * were requested, an operator callback marks one active). A review created once and
+   * never revisited would show the status from the day it was imported.
+   */
+  private async refreshDrifted(
+    applications: {
+      id: string;
+      status: string;
+      reviewedAt: Date | null;
+      rejectionReason: string | null;
+    }[],
+    reviews: { id: string; applicationId: string; status: SenderIdStatus }[],
+  ): Promise<number> {
+    const byApplication = new Map(applications.map((a) => [a.id, a]));
+    let refreshed = 0;
+    for (const review of reviews) {
+      const application = byApplication.get(review.applicationId);
+      const mapped = application && toReviewStatus(application.status);
+      if (!application || !mapped || mapped === review.status) continue;
+
+      const decided = [
+        'APPROVED',
+        'REJECTED',
+        'ACTIVE',
+        'OPERATOR_REJECTED',
+      ].includes(mapped);
+      await this.admin.senderIdReview.update({
+        where: { id: review.id },
+        data: {
+          status: mapped,
+          decidedAt: decided ? (application.reviewedAt ?? new Date()) : null,
+          decisionReason: application.rejectionReason,
+          events: {
+            create: {
+              fromStatus: review.status,
+              toStatus: mapped,
+              comment: 'Status changed in the Zapiack app',
+            },
+          },
+        },
+      });
+      refreshed += 1;
+    }
+    return refreshed;
   }
 
   async list(query: ListSenderIdsDto) {
     const limit = query.limit ?? 50;
+    const after = decodeCursor(query.cursor);
+
+    const filters = {
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.assigneeId ? { assigneeId: query.assigneeId } : {}),
+      ...(query.overdueOnly
+        ? { slaDueAt: { lt: new Date() }, decidedAt: null }
+        : {}),
+      ...(query.q
+        ? {
+            OR: [
+              {
+                senderId: { contains: query.q, mode: 'insensitive' as const },
+              },
+              { accountId: query.q },
+              { applicationId: query.q },
+            ],
+          }
+        : {}),
+    };
 
     const reviews = await this.admin.senderIdReview.findMany({
       where: {
-        ...(query.status ? { status: query.status } : {}),
-        ...(query.assigneeId ? { assigneeId: query.assigneeId } : {}),
-        ...(query.overdueOnly
-          ? { slaDueAt: { lt: new Date() }, decidedAt: null }
-          : {}),
-        ...(query.q
-          ? {
-              OR: [
+        AND: [
+          filters,
+          // Keyset paging on the same (slaDueAt, id) order the queue is sorted by, so
+          // a page boundary never skips or repeats a row when SLAs tie.
+          ...(after
+            ? [
                 {
-                  senderId: { contains: query.q, mode: 'insensitive' as const },
+                  OR: [
+                    { slaDueAt: { gt: after.slaDueAt } },
+                    { slaDueAt: after.slaDueAt, id: { gt: after.id } },
+                  ],
                 },
-                { accountId: query.q },
-                { applicationId: query.q },
-              ],
-            }
-          : {}),
+              ]
+            : []),
+        ],
       },
       // Oldest SLA first: the queue is a work list, not a feed.
       orderBy: [{ slaDueAt: 'asc' }, { id: 'asc' }],
@@ -197,6 +271,7 @@ export class SenderIdsService {
 
     const now = Date.now();
     const page = reviews.slice(0, limit);
+    const last = page[page.length - 1];
 
     // Queue counts per status, unaffected by the current filter, so the tabs can show
     // totals while the list shows one of them.
@@ -210,6 +285,9 @@ export class SenderIdsService {
     counts.OVERDUE = await this.admin.senderIdReview.count({
       where: { decidedAt: null, slaDueAt: { lt: new Date() } },
     });
+    // Applications the product holds that are not in the queue (drafts, or a status
+    // this console does not know). Shown so "where is my sender ID" has an answer.
+    counts.UNFILED = (await this.unfiledApplications()).length;
 
     return {
       counts,
@@ -228,6 +306,60 @@ export class SenderIdsService {
           : Math.round((r.slaDueAt.getTime() - now) / 3_600_000),
       })),
       hasMore: reviews.length > limit,
+      nextCursor:
+        reviews.length > limit && last
+          ? encodeCursor(last.slaDueAt, last.id)
+          : null,
+    };
+  }
+
+  /**
+   * Applications in the product database that have no review: drafts the customer has
+   * not filed, and any whose status this console does not recognise. Read-only; they
+   * are not reviewable, but they are real and staff should be able to see them.
+   */
+  private async unfiledApplications() {
+    const rows = await this.zapiack.read.senderIdApplication.findMany({
+      select: {
+        id: true,
+        accountId: true,
+        senderId: true,
+        businessName: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        submittedAt: true,
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+    return rows.filter((row) => !toReviewStatus(row.status));
+  }
+
+  async unfiled() {
+    const rows = await this.unfiledApplications();
+    const byStatus: Record<string, number> = {};
+    for (const row of rows) {
+      const key = row.status || '(empty)';
+      byStatus[key] = (byStatus[key] ?? 0) + 1;
+    }
+    return {
+      byStatus,
+      data: rows.map((row) => ({
+        applicationId: row.id,
+        accountId: row.accountId,
+        senderId: row.senderId,
+        businessName: row.businessName,
+        status: row.status,
+        // A draft is the customer's to finish; anything else is a status the console
+        // does not map and needs a developer to look at.
+        reason:
+          row.status.trim().toUpperCase() === 'DRAFT'
+            ? 'Not yet submitted by the customer'
+            : 'Status not recognised by the console',
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      })),
+      hasMore: false,
       nextCursor: null,
     };
   }
@@ -610,3 +742,23 @@ const NOTIFICATION_SEVERITY: Record<string, string> = {
   OPERATOR_REJECTED: 'ERROR',
   SUSPENDED: 'ERROR',
 };
+
+function encodeCursor(slaDueAt: Date, id: string): string {
+  return Buffer.from(
+    JSON.stringify({ t: slaDueAt.toISOString(), id }),
+  ).toString('base64url');
+}
+
+function decodeCursor(cursor?: string): { slaDueAt: Date; id: string } | null {
+  if (!cursor) return null;
+  try {
+    const { t, id } = JSON.parse(
+      Buffer.from(cursor, 'base64url').toString('utf8'),
+    ) as { t?: string; id?: string };
+    const slaDueAt = new Date(t ?? '');
+    if (!id || Number.isNaN(slaDueAt.getTime())) return null;
+    return { slaDueAt, id };
+  } catch {
+    return null;
+  }
+}
