@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import type { AdminConfig } from '../config/configuration';
@@ -9,7 +14,7 @@ import type { AdminConfig } from '../config/configuration';
  * issue commands, so they are created separately from the main client.
  */
 @Injectable()
-export class RedisService implements OnModuleDestroy {
+export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
   readonly client: Redis;
   readonly prefix: string;
@@ -27,6 +32,35 @@ export class RedisService implements OnModuleDestroy {
     this.client.on('error', (err) =>
       this.logger.error(`Redis error: ${err.message}`),
     );
+  }
+
+  /**
+   * One line of Redis health at startup. Sessions, queues and live-map fan-out all
+   * live here, so whether it is full or evicting explains a lot of odd behaviour.
+   */
+  async onModuleInit() {
+    try {
+      const [memory, stats] = await Promise.all([
+        this.client.info('memory'),
+        this.client.info('stats'),
+      ]);
+      const field = (text: string, name: string) =>
+        text.match(new RegExp(`^${name}:(.*)$`, 'm'))?.[1]?.trim() ?? '?';
+      const evicted = field(stats, 'evicted_keys');
+      const policy = field(memory, 'maxmemory_policy');
+      this.logger.log(
+        `Redis memory ${field(memory, 'used_memory_human')} of ${field(memory, 'maxmemory_human')}, policy ${policy}, evicted keys since start ${evicted}`,
+      );
+      if (Number(evicted) > 0) {
+        this.logger.warn(
+          `Redis has evicted ${evicted} key(s). Session and queue keys can be among them; use a database with spare memory and a noeviction policy dedicated to admin-core.`,
+        );
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Could not read Redis health: ${(err as Error).message}`,
+      );
+    }
   }
 
   /**

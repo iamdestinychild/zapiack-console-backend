@@ -77,6 +77,19 @@ export class SessionService {
     };
 
     await this.persist(record);
+
+    // Read it straight back. If Redis accepted the write and cannot return it, it is
+    // dropping keys (eviction under memory pressure, or a different database on the
+    // next connection), and every sign-in will fail at the next step with a
+    // misleading "session expired".
+    const stored = await this.redis.client.get(
+      this.sessionKey(record.sessionId),
+    );
+    if (!stored) {
+      this.logger.error(
+        'A new session was written to Redis and could not be read back. Redis is dropping keys: check its memory, eviction policy and that REDIS_URL points at a database used only by admin-core.',
+      );
+    }
     await this.redis.client.sadd(
       this.staffIndexKey(input.staffId),
       record.sessionId,
