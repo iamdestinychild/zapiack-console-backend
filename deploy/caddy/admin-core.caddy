@@ -1,0 +1,64 @@
+# Site block for admin-core, to add to the Caddy that already runs on the droplet.
+#
+# Paste it into /etc/caddy/Caddyfile, or save it as /etc/caddy/sites/admin-core.caddy
+# and add `import sites/*.caddy` to the main file. Then:
+#
+#   sudo caddy validate --config /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# Replace the hostname with the real one. Its DNS must already point at this droplet,
+# or Caddy cannot obtain a certificate.
+#
+# There is no global options block here on purpose: a Caddyfile may only have one, and
+# yours already does. Certificates, HTTP->HTTPS redirects and renewal are Caddy's
+# defaults and need nothing extra.
+
+admin-api.example.com {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# Live map and staff inbox are long-lived text/event-stream responses. Without
+	# flush_interval -1 Caddy buffers events and the map appears frozen.
+	@sse path /admin/v1/geo/live /admin/v1/events
+	handle @sse {
+		reverse_proxy 127.0.0.1:3001 {
+			flush_interval -1
+			transport http {
+				read_timeout 0
+				write_timeout 0
+			}
+		}
+	}
+
+	# Sender ID document zips stream through admin-core and can take a while.
+	@downloads path_regexp zip ^/admin/v1/sender-ids/[^/]+/documents\.zip$
+	handle @downloads {
+		reverse_proxy 127.0.0.1:3001 {
+			flush_interval -1
+			transport http {
+				read_timeout 10m
+				write_timeout 10m
+			}
+		}
+	}
+
+	# Everything else. Caddy sets X-Forwarded-For itself, and admin-core trusts exactly
+	# one proxy hop; the IP allowlist, the live map and every audit entry read the
+	# client address from it. If this ever sits behind a second proxy, raise
+	# `trust proxy` in src/main.ts to match.
+	handle {
+		reverse_proxy 127.0.0.1:3001 {
+			transport http {
+				read_timeout 60s
+				write_timeout 60s
+			}
+		}
+	}
+}

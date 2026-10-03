@@ -2,12 +2,15 @@
 #
 #   docker compose -f docker-compose.prod.yml up -d
 #
-# Reads .env from this directory. Nothing here publishes a port except Caddy, so
-# Postgres, Redis and the app are reachable only from inside the compose network.
-# Lock the droplet firewall to 22, 80 and 443.
+# The droplet already runs Caddy, which terminates TLS for everything on it. This stack
+# therefore does NOT start a Caddy of its own: a second one would fight for ports 80
+# and 443. admin-core listens on 127.0.0.1:3001 only, so Caddy can reach it and the
+# internet cannot. Postgres and Redis publish nothing at all.
+#
+# Reads .env from this directory. Lock the droplet firewall to 22, 80 and 443.
 
 x-app: &app
-  image: ${ADMIN_IMAGE:-ghcr.io/zapiack/admin-core:latest}
+  image: ${ADMIN_IMAGE:-ghcr.io/iamdestinychild/zapiack-console-backend:latest}
   env_file: [.env]
   depends_on:
     postgres: { condition: service_healthy }
@@ -23,30 +26,10 @@ x-app: &app
     options: { max-size: "10m", max-file: "5" }
 
 services:
-  caddy:
-    image: caddy:2-alpine
-    container_name: admin_caddy
-    depends_on: [admin-core]
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      ADMIN_DOMAIN: ${ADMIN_DOMAIN}
-      ACME_EMAIL: ${ACME_EMAIL}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # Certificates live here. Losing this volume means re-issuing on next start,
-      # which is rate limited by Let's Encrypt — keep it.
-      - caddy_data:/data
-      - caddy_config:/config
-      - caddy_logs:/var/log/caddy
-    restart: unless-stopped
-    networks: [admin_net]
-
   # Runs to completion before web and worker start, so no process ever serves
   # traffic against a schema it does not match.
   migrate:
-    image: ${ADMIN_IMAGE:-ghcr.io/zapiack/admin-core:latest}
+    image: ${ADMIN_IMAGE:-ghcr.io/iamdestinychild/zapiack-console-backend:latest}
     container_name: admin_migrate
     env_file: [.env]
     command: ["npx", "prisma", "migrate", "deploy", "--config", "prisma.admin.config.ts"]
@@ -61,13 +44,16 @@ services:
     environment:
       ADMIN_ROLE: web
       PORT: 3001
+    ports:
+      # Loopback only. The host's Caddy proxies to this; nothing else can.
+      - "127.0.0.1:3001:3001"
 
   admin-worker:
     <<: *app
     container_name: admin_core_worker
     environment:
       ADMIN_ROLE: worker
-      # Binds HTTP only so the health probe has something to hit; nothing routes here.
+      # Binds HTTP only so the container healthcheck has something to hit.
       PORT: 3002
 
   postgres:
@@ -114,9 +100,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  caddy_data:
-  caddy_config:
-  caddy_logs:
 
 networks:
   admin_net:

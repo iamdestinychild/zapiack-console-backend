@@ -83,6 +83,10 @@ export class AuditQueryController {
       orderBy: { _count: { action: 'desc' } },
       take: 200,
     });
-    return rows.map((r) => ({ action: r.action, count: r._count._all }));
+    return {
+      data: rows.map((r) => ({ action: r.action, count: r._count._all })),
+      hasMore: false,
+      nextCursor: null,
+    };
   }
 }

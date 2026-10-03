@@ -17,12 +17,18 @@ interface UsageBucket {
   units: bigint;
   revenueNgn: string;
   costNgn: string;
-  latencyP50Ms: number | null;
-  latencyP95Ms: number | null;
 }
 
 /**
  * Aggregation from raw product rows into the Admin DB rollups every screen reads.
+ *
+ * Every timestamp column here is `timestamp without time zone` holding UTC, which is
+ * how Prisma stores a DateTime. Converting one to a Lagos calendar day therefore takes
+ * two steps: `AT TIME ZONE 'UTC'` to say what the naive value means, then
+ * `AT TIME ZONE 'Africa/Lagos'` to move it. The second alone reads the value as Lagos
+ * local time and shifts everything in the 23:00 UTC hour onto the wrong day — which
+ * also makes a window straddle two dates, so consecutive daily runs overwrite each
+ * other's buckets.
  *
  * Every job is idempotent: it upserts a (date, hour, channel, accountId, country,
  * provider) bucket, so re-running a window never double-counts. That is what makes it
@@ -46,21 +52,19 @@ export class RollupsService {
   async rollUsage(start: Date, end: Date): Promise<number> {
     const buckets = await this.zapiack.read.$queryRaw<UsageBucket[]>`
       SELECT
-        ("createdAt" AT TIME ZONE ${LAGOS})::date                                  AS date,
-        EXTRACT(HOUR FROM ("createdAt" AT TIME ZONE ${LAGOS}))::int                 AS hour,
+        ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${LAGOS})::date                                  AS date,
+        EXTRACT(HOUR FROM ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${LAGOS}))::int                 AS hour,
         "channel"::text                                                            AS channel,
         "accountId",
-        COALESCE("destinationCountry", 'UNKNOWN')                                  AS country,
-        COALESCE("provider", 'UNKNOWN')                                            AS provider,
+        COALESCE("countryCode", 'UNKNOWN')                                  AS country,
+        COALESCE("operator", 'UNKNOWN')                                            AS provider,
         COUNT(*)::bigint                                                           AS attempted,
-        COUNT(*) FILTER (WHERE "status" IN ('delivered', 'accepted', 'success'))::bigint AS succeeded,
-        COUNT(*) FILTER (WHERE "status" = 'failed')::bigint                        AS failed,
-        COALESCE(SUM("units"), 0)::bigint                                          AS units,
-        COALESCE(SUM("totalPriceNgn"), 0)::text                                    AS "revenueNgn",
-        COALESCE(SUM("providerCostNgn"), 0)::text                                  AS "costNgn",
-        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY "latencyMs")::int              AS "latencyP50Ms",
-        PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY "latencyMs")::int             AS "latencyP95Ms"
-      FROM "usage_records"
+        COUNT(*) FILTER (WHERE "status" = 'DELIVERED')::bigint AS succeeded,
+        COUNT(*) FILTER (WHERE "status" = 'FAILED')::bigint                        AS failed,
+        COUNT(*)::bigint                                          AS units,
+        COALESCE(SUM("cost"), 0)::text                                    AS "revenueNgn",
+        '0'::text                                  AS "costNgn"
+      FROM "log_events"
       WHERE "createdAt" >= ${start} AND "createdAt" < ${end}
       GROUP BY 1, 2, 3, 4, 5, 6
     `;
@@ -82,21 +86,19 @@ export class RollupsService {
 
     const buckets = await this.zapiack.read.$queryRaw<UsageBucket[]>`
       SELECT
-        ("createdAt" AT TIME ZONE ${LAGOS})::date                                  AS date,
+        ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${LAGOS})::date                                  AS date,
         -1                                                                         AS hour,
         "channel"::text                                                            AS channel,
         "accountId",
-        COALESCE("destinationCountry", 'UNKNOWN')                                  AS country,
-        COALESCE("provider", 'UNKNOWN')                                            AS provider,
+        COALESCE("countryCode", 'UNKNOWN')                                  AS country,
+        COALESCE("operator", 'UNKNOWN')                                            AS provider,
         COUNT(*)::bigint                                                           AS attempted,
-        COUNT(*) FILTER (WHERE "status" IN ('delivered', 'accepted', 'success'))::bigint AS succeeded,
-        COUNT(*) FILTER (WHERE "status" = 'failed')::bigint                        AS failed,
-        COALESCE(SUM("units"), 0)::bigint                                          AS units,
-        COALESCE(SUM("totalPriceNgn"), 0)::text                                    AS "revenueNgn",
-        COALESCE(SUM("providerCostNgn"), 0)::text                                  AS "costNgn",
-        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY "latencyMs")::int              AS "latencyP50Ms",
-        PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY "latencyMs")::int             AS "latencyP95Ms"
-      FROM "usage_records"
+        COUNT(*) FILTER (WHERE "status" = 'DELIVERED')::bigint AS succeeded,
+        COUNT(*) FILTER (WHERE "status" = 'FAILED')::bigint                        AS failed,
+        COUNT(*)::bigint                                          AS units,
+        COALESCE(SUM("cost"), 0)::text                                    AS "revenueNgn",
+        '0'::text                                  AS "costNgn"
+      FROM "log_events"
       WHERE "createdAt" >= ${start.toJSDate()} AND "createdAt" < ${end.toJSDate()}
       GROUP BY 1, 3, 4, 5, 6
     `;
@@ -138,8 +140,6 @@ export class RollupsService {
               units: b.units,
               revenueNgn: b.revenueNgn,
               costNgn: b.costNgn,
-              latencyP50Ms: b.latencyP50Ms,
-              latencyP95Ms: b.latencyP95Ms,
               finalisedAt,
             },
           }),
@@ -168,17 +168,17 @@ export class RollupsService {
       }[]
     >`
       SELECT
-        ("createdAt" AT TIME ZONE ${LAGOS})::date         AS date,
+        ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${LAGOS})::date         AS date,
         "channel"::text                                   AS channel,
         "accountId",
-        COALESCE("destinationCountry", 'UNKNOWN')         AS country,
-        "destinationNetwork"                              AS network,
+        COALESCE("countryCode", 'UNKNOWN')         AS country,
+        "operator"                                         AS network,
         COUNT(*)::bigint                                  AS attempted,
-        COUNT(*) FILTER (WHERE "status" = 'delivered')::bigint AS delivered,
-        COALESCE(SUM("providerCostNgn"), 0)::text         AS "costNgn"
-      FROM "usage_records"
+        COUNT(*) FILTER (WHERE "status" = 'DELIVERED')::bigint AS delivered,
+        '0'::text         AS "costNgn"
+      FROM "log_events"
       WHERE "createdAt" >= ${start.toJSDate()} AND "createdAt" < ${end.toJSDate()}
-        AND "channel" IN ('SMS', 'WHATSAPP', 'VOICE')
+        AND "channel" IN ('SMS', 'WHATSAPP', 'VOICE', 'AUDIO')
       GROUP BY 1, 2, 3, 4, 5
     `;
 
@@ -228,12 +228,14 @@ export class RollupsService {
       }[]
     >`
       SELECT
-        COALESCE(SUM("amountNgn")   FILTER (WHERE "status" = 'SUCCESS'), 0)::text AS collected,
-        COALESCE(SUM("refundedNgn"), 0)::text                                     AS refunded,
-        COALESCE(SUM("feeNgn")      FILTER (WHERE "status" = 'SUCCESS'), 0)::text AS fees,
-        COUNT(*) FILTER (WHERE "status" = 'SUCCESS')::bigint                      AS "paymentCount",
-        COUNT(*) FILTER (WHERE "status" = 'FAILED')::bigint                       AS "failedCount"
-      FROM "payments"
+        COALESCE(SUM("amount") FILTER (WHERE "status" = 'SUCCESS'), 0)::text  AS collected,
+        COALESCE(SUM("amount") FILTER (WHERE "status" = 'REVERSED'), 0)::text AS refunded,
+        -- Payment processing fees are not recorded on a transaction, so there is
+        -- nothing to sum. Left at zero rather than guessed.
+        '0'::text                                                             AS fees,
+        COUNT(*) FILTER (WHERE "status" = 'SUCCESS')::bigint                  AS "paymentCount",
+        COUNT(*) FILTER (WHERE "status" = 'FAILED')::bigint                   AS "failedCount"
+      FROM "transactions"
       WHERE "createdAt" >= ${start.toJSDate()} AND "createdAt" < ${end.toJSDate()}
     `;
 
@@ -262,16 +264,18 @@ export class RollupsService {
 
     const [liability, mrr, activity] = await Promise.all([
       this.zapiack.read.$queryRaw<{ total: string }[]>`
-        SELECT COALESCE(SUM("balance"), 0)::text AS total FROM "accounts" WHERE "status" <> 'CLOSED'
+        SELECT COALESCE(SUM("creditBalance"), 0)::text AS total
+        FROM "accounts"
+        WHERE "accountStatus" NOT IN ('CANCELED', 'BANNED')
       `,
       // Annual plans are divided by 12 so MRR means the same thing across plans.
       this.zapiack.read.$queryRaw<{ mrr: string }[]>`
         SELECT COALESCE(SUM(
-          CASE WHEN p."interval" = 'year' THEN p."priceNgn" / 12 ELSE p."priceNgn" END
+          CASE WHEN p."billingInterval" = 'YEARLY' THEN p."basePrice" / 12 ELSE p."basePrice" END
         ), 0)::text AS mrr
         FROM "subscriptions" s
         JOIN "plans" p ON p."id" = s."planId"
-        WHERE s."status" = 'active' AND s."startedAt" < ${end.toJSDate()}
+        WHERE s."status" = 'ACTIVE' AND s."createdAt" < ${end.toJSDate()}
           AND (s."cancelledAt" IS NULL OR s."cancelledAt" >= ${end.toJSDate()})
       `,
       this.zapiack.read.$queryRaw<
@@ -288,18 +292,18 @@ export class RollupsService {
             AS "newAccounts",
           -- Activated: created in the last 14 days and already made a paid send.
           (SELECT COUNT(DISTINCT a."id") FROM "accounts" a
-             JOIN "usage_records" u ON u."accountId" = a."id"
+             JOIN "log_events" u ON u."accountId" = a."id"
             WHERE a."createdAt" >= ${start.minus({ days: 14 }).toJSDate()}
               AND a."createdAt" < ${end.toJSDate()}
               AND u."createdAt" <= a."createdAt" + INTERVAL '14 days'
-              AND u."totalPriceNgn" > 0)::bigint
+              AND u."cost" > 0)::bigint
             AS "activatedAccounts",
-          (SELECT COUNT(DISTINCT "accountId") FROM "usage_records"
+          (SELECT COUNT(DISTINCT "accountId") FROM "log_events"
              WHERE "createdAt" >= ${start.toJSDate()} AND "createdAt" < ${end.toJSDate()})::bigint
             AS "activeAccounts",
           -- Subscription fees are recognised on the day the period starts. See the
           -- open question on daily recognition in the PRD.
-          (SELECT COALESCE(SUM(p."priceNgn"), 0) FROM "subscriptions" s
+          (SELECT COALESCE(SUM(p."basePrice"), 0) FROM "subscriptions" s
              JOIN "plans" p ON p."id" = s."planId"
             WHERE s."currentPeriodStart" >= ${start.toJSDate()}
               AND s."currentPeriodStart" < ${end.toJSDate()})::text
@@ -325,64 +329,93 @@ export class RollupsService {
 
   // ---------------------------------------------------------------- requests
 
-  /** API traffic rollups, sourced from the Admin DB's own request log. */
+  /**
+   * API traffic rollups, read from the product's own `api_activity_logs`.
+   *
+   * That table keys traffic by API key prefix rather than by account, so the prefixes
+   * are resolved to accounts here. It records no latency, so the p50/p95 columns stay
+   * null until the product captures request duration.
+   */
   async rollRequests(start: Date, end: Date): Promise<number> {
-    const rows = await this.admin.$queryRaw<
+    const rows = await this.zapiack.read.$queryRaw<
       {
         date: Date;
         hour: number;
-        accountId: string | null;
+        apiKeyPrefix: string | null;
         endpoint: string;
         method: string;
         country: string;
         total: bigint;
         clientErrors: bigint;
         serverErrors: bigint;
-        latencyP50Ms: number | null;
-        latencyP95Ms: number | null;
       }[]
     >`
       SELECT
-        ("occurredAt" AT TIME ZONE ${LAGOS})::date                      AS date,
-        EXTRACT(HOUR FROM ("occurredAt" AT TIME ZONE ${LAGOS}))::int     AS hour,
-        "accountId",
+        ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${LAGOS})::date                   AS date,
+        EXTRACT(HOUR FROM ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${LAGOS}))::int AS hour,
+        "apiKeyPrefix",
         "endpoint",
         "method",
-        COALESCE("country", 'UNKNOWN')                                  AS country,
-        COUNT(*)::bigint                                                AS total,
-        COUNT(*) FILTER (WHERE "statusCode" BETWEEN 400 AND 499)::bigint AS "clientErrors",
-        COUNT(*) FILTER (WHERE "statusCode" >= 500)::bigint             AS "serverErrors",
-        PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY "latencyMs")::int  AS "latencyP50Ms",
-        PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY "latencyMs")::int  AS "latencyP95Ms"
-      FROM "request_logs"
-      WHERE "occurredAt" >= ${start} AND "occurredAt" < ${end}
+        COALESCE("countryCode", 'UNKNOWN')                                             AS country,
+        COUNT(*)::bigint                                                               AS total,
+        COUNT(*) FILTER (WHERE "statusCode" BETWEEN 400 AND 499)::bigint               AS "clientErrors",
+        COUNT(*) FILTER (WHERE "statusCode" >= 500)::bigint                            AS "serverErrors"
+      FROM "api_activity_logs"
+      WHERE "createdAt" >= ${start} AND "createdAt" < ${end}
       GROUP BY 1, 2, 3, 4, 5, 6
     `;
 
+    const prefixes = [
+      ...new Set(
+        rows.map((r) => r.apiKeyPrefix).filter((p): p is string => Boolean(p)),
+      ),
+    ];
+    const keys = prefixes.length
+      ? await this.zapiack.read.apiKeys.findMany({
+          where: { keyPrefix: { in: prefixes } },
+          select: { keyPrefix: true, accountId: true },
+        })
+      : [];
+    const accountByPrefix = new Map(
+      keys.map((k) => [k.keyPrefix, k.accountId]),
+    );
+
     for (const chunk of chunked(rows, 500)) {
       await this.admin.$transaction(
-        chunk.map((r) =>
-          this.admin.requestRollup.upsert({
+        chunk.map((r) => {
+          // Unattributed traffic (no key, or a key since deleted) is kept under an
+          // empty account rather than dropped: the totals still have to add up.
+          const accountId = r.apiKeyPrefix
+            ? (accountByPrefix.get(r.apiKeyPrefix) ?? '')
+            : '';
+          const data = {
+            total: r.total,
+            clientErrors: r.clientErrors,
+            serverErrors: r.serverErrors,
+          };
+          return this.admin.requestRollup.upsert({
             where: {
               date_hour_accountId_endpoint_method_country: {
                 date: r.date,
                 hour: r.hour,
-                accountId: r.accountId ?? '',
+                accountId,
                 endpoint: r.endpoint,
                 method: r.method,
                 country: r.country,
               },
             },
-            create: { ...r, accountId: r.accountId ?? '' },
-            update: {
-              total: r.total,
-              clientErrors: r.clientErrors,
-              serverErrors: r.serverErrors,
-              latencyP50Ms: r.latencyP50Ms,
-              latencyP95Ms: r.latencyP95Ms,
+            create: {
+              date: r.date,
+              hour: r.hour,
+              accountId,
+              endpoint: r.endpoint,
+              method: r.method,
+              country: r.country,
+              ...data,
             },
-          }),
-        ),
+            update: data,
+          });
+        }),
       );
     }
     return rows.length;

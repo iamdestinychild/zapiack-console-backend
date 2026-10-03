@@ -11,6 +11,7 @@ import { DateTime } from 'luxon';
 import { Prisma } from '../../generated/admin/client';
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { AuditService } from '../../common/audit/audit.service';
+import { buildPage } from '../../common/http/pagination';
 import { S3Service } from '../../integrations/s3/s3.service';
 import { DEFAULT_JOB_OPTIONS, JOBS, QUEUES } from '../jobs/queues';
 import type { AdminConfig } from '../../common/config/configuration';
@@ -77,13 +78,14 @@ export class ExportsService {
     return { id: job.id, status: job.status, expiresAt: job.expiresAt };
   }
 
-  async list(actor: StaffPrincipal) {
-    return this.admin.exportJob.findMany({
+  async list(actor: StaffPrincipal, limit = 20) {
+    const rows = await this.admin.exportJob.findMany({
       // Staff see their own exports; an export is tied to the reason its requester had.
       where: { requestedById: actor.id },
-      orderBy: { createdAt: 'desc' },
-      take: 50,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
     });
+    return buildPage(rows, limit);
   }
 
   /** The only way to the file. Generates a fresh short-lived link and audits the fetch. */

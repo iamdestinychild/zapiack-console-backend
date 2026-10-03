@@ -5,12 +5,13 @@ import {
   RequirePermissions,
 } from '../../common/auth/decorators';
 import type { StaffPrincipal } from '../../common/auth/staff-principal';
-import { CursorPageDto, ReasonDto } from '../../common/dto/common.dto';
+import { ReasonDto } from '../../common/dto/common.dto';
 import { CampaignsService } from './campaigns.service';
 import { SegmentsService } from './segments.service';
 import {
   ApproveCampaignDto,
   CreateCampaignDto,
+  ListCampaignsDto,
   ScheduleCampaignDto,
   SegmentFilterDto,
   UpsertSegmentDto,
@@ -28,7 +29,7 @@ export class NotificationsController {
 
   @Get('campaigns')
   @RequirePermissions('notifications.send')
-  list(@Query() query: CursorPageDto & { status?: string }) {
+  list(@Query() query: ListCampaignsDto) {
     return this.campaigns.list(query);
   }
 

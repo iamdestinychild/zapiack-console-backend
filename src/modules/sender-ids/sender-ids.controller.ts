@@ -79,7 +79,7 @@ export class SenderIdsController {
     @Param('docId') docId: string,
     @Query() query: DocumentUrlDto,
   ) {
-    return this.documents.presign(
+    return this.documents.resolve(
       staff,
       id,
       docId,

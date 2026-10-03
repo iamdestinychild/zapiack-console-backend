@@ -17,7 +17,7 @@ import {
   cursorWhere,
   decodeCursor,
 } from '../../common/http/pagination';
-import { CursorPageDto } from '../../common/dto/common.dto';
+import { ListInboxDto } from './dto/inbox.dto';
 
 /** The staff member's own inbox. Session is enough; no extra permission applies. */
 @Controller()
@@ -30,14 +30,14 @@ export class InboxController {
   @Get('inbox')
   async list(
     @CurrentStaff() staff: StaffPrincipal,
-    @Query() query: CursorPageDto & { unreadOnly?: string },
+    @Query() query: ListInboxDto,
   ) {
     const limit = query.limit ?? 50;
     const rows = await this.admin.staffNotification.findMany({
       where: {
         staffId: staff.id,
         ...cursorWhere(decodeCursor(query.cursor)),
-        ...(query.unreadOnly === 'true' ? { readAt: null } : {}),
+        ...(query.unreadOnly ? { readAt: null } : {}),
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: limit + 1,
@@ -64,12 +64,13 @@ export class InboxController {
   }
 
   @Post('inbox/read-all')
-  @HttpCode(204)
   async markAllRead(@CurrentStaff() staff: StaffPrincipal) {
     await this.admin.staffNotification.updateMany({
       where: { staffId: staff.id, readAt: null },
       data: { readAt: new Date() },
     });
+    // Returning the count lets the caller settle the badge without a second request.
+    return { unread: 0 };
   }
 
   /** Live console notifications for this staff member. */

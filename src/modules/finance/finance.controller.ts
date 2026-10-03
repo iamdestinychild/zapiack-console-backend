@@ -6,7 +6,7 @@ import {
   RequirePermissions,
 } from '../../common/auth/decorators';
 import type { StaffPrincipal } from '../../common/auth/staff-principal';
-import { DateRangeDto } from '../../common/dto/common.dto';
+import { DateRangePageDto } from '../../common/dto/common.dto';
 import { resolveRange } from '../../common/time/lagos';
 import { FinanceService } from './finance.service';
 import { ReconciliationService } from './reconciliation.service';
@@ -47,7 +47,7 @@ export class FinanceController {
 
   @Get('finance/reconciliation')
   @RequirePermissions('finance.read')
-  reconciliationRuns(@Query() query: DateRangeDto) {
+  reconciliationRuns(@Query() query: DateRangePageDto) {
     const { start, end } = resolveRange(query.from, query.to, 30);
     return this.reconciliation.list(start, end);
   }

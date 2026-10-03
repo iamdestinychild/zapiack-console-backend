@@ -1,4 +1,8 @@
 /**
+ * The product lines the product database can actually report on: LogEventChannel is
+ * EMAIL, SMS, WHATSAPP, VOICE and AUDIO. In-app notifications, face liveness, video
+ * and mapping have no channel yet, so they are absent rather than listed as empty.
+ *
  * One metrics module covers every product line, so a new service plugs in as a row
  * here rather than as a new screen. `channel` matches ChannelType in the Zapiack DB;
  * `specificMetrics` names what the service page shows beside the common figures.
@@ -139,8 +143,8 @@ export const SERVICES: ServiceDefinition[] = [
     ],
   },
   {
-    key: 'video',
-    channel: 'VIDEO',
+    key: 'audio',
+    channel: 'AUDIO',
     label: 'Video',
     unit: 'session',
     live: false,
@@ -162,70 +166,6 @@ export const SERVICES: ServiceDefinition[] = [
         label: 'Failed joins',
         kind: 'sum',
         attribute: 'failedJoins',
-      },
-    ],
-  },
-  {
-    key: 'in-app',
-    channel: 'IN_APP',
-    label: 'In-app notifications',
-    unit: 'notification',
-    live: true,
-    specificMetrics: [
-      {
-        key: 'deliveredToDevice',
-        label: 'Delivered to device',
-        kind: 'sum',
-        attribute: 'deliveredToDevice',
-      },
-      { key: 'opened', label: 'Opened', kind: 'sum', attribute: 'opened' },
-    ],
-  },
-  {
-    key: 'face-liveness',
-    channel: 'FACE_LIVENESS',
-    label: 'Face liveness',
-    unit: 'check',
-    live: false,
-    specificMetrics: [
-      {
-        key: 'passRate',
-        label: 'Pass rate',
-        kind: 'rate',
-        attribute: 'passed',
-      },
-      {
-        key: 'spoofRate',
-        label: 'Spoof-detected rate',
-        kind: 'rate',
-        attribute: 'spoofDetected',
-      },
-      {
-        key: 'avgCheckMs',
-        label: 'Average check time',
-        kind: 'avg',
-        attribute: 'checkMs',
-      },
-    ],
-  },
-  {
-    key: 'mapping',
-    channel: 'MAPPING',
-    label: 'Mapping',
-    unit: 'request',
-    live: false,
-    specificMetrics: [
-      {
-        key: 'byType',
-        label: 'Requests by type',
-        kind: 'sum',
-        attribute: 'requestType',
-      },
-      {
-        key: 'cacheHitRate',
-        label: 'Cache hit rate',
-        kind: 'rate',
-        attribute: 'cacheHit',
       },
     ],
   },

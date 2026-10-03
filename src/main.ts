@@ -5,6 +5,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { buildOpenApiDocument, mountOpenApi } from './common/openapi';
 import type { AdminConfig } from './common/config/configuration';
 
 async function bootstrap() {
@@ -55,6 +56,13 @@ async function bootstrap() {
     ],
     maxAge: 600,
   });
+
+  // Outside production the API documents itself, so the console team reads the same
+  // contract the service enforces.
+  if (cfg.env !== 'production' || process.env.ADMIN_EXPOSE_DOCS === 'true') {
+    mountOpenApi(app, buildOpenApiDocument(app));
+    logger.log(`API reference at http://localhost:${cfg.port}/admin/v1/docs`);
+  }
 
   app.useGlobalPipes(
     new ValidationPipe({

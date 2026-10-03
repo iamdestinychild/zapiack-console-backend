@@ -360,10 +360,11 @@ export class CampaignsService {
 
   // ---------------------------------------------------------------- templates
 
-  listTemplates() {
-    return this.admin.notificationTemplate.findMany({
+  async listTemplates() {
+    const data = await this.admin.notificationTemplate.findMany({
       orderBy: { name: 'asc' },
     });
+    return { data, hasMore: false, nextCursor: null };
   }
 
   async upsertTemplate(actor: StaffPrincipal, dto: UpsertTemplateDto) {

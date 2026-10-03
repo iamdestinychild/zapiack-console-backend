@@ -130,23 +130,34 @@ jobs:
           cache-to: type=gha,mode=max
 
   config:
-    name: Caddy and compose are valid
+    name: Caddy snippet and compose are valid
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate the Caddyfile
+      - name: Validate the Caddy site block
         run: |
-          docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
-            -e ADMIN_DOMAIN=admin-api.example.com -e ACME_EMAIL=ops@example.com \
+          docker run --rm -v "$PWD/deploy/caddy/admin-core.caddy:/etc/caddy/Caddyfile:ro" \
             caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
 
       - name: Validate the production compose
         env:
-          ADMIN_DOMAIN: admin-api.example.com
-          ACME_EMAIL: ops@example.com
+          ADMIN_IMAGE: ghcr.io/example/admin-core:ci
           DB_USERNAME: ci
           DB_PASSWORD: ci
           DB_NAME: zapiack_admin
           REDIS_PASSWORD: ci
         run: docker compose -f docker-compose.prod.yml config --quiet
+
+      - name: The stack must not publish ports 80 or 443
+        # The droplet's own Caddy owns them; a second listener would break it.
+        env:
+          ADMIN_IMAGE: ghcr.io/example/admin-core:ci
+          DB_USERNAME: ci
+          DB_PASSWORD: ci
+          DB_NAME: zapiack_admin
+          REDIS_PASSWORD: ci
+        run: |
+          if docker compose -f docker-compose.prod.yml config | grep -E 'published: "(80|443)"'; then
+            echo "::error::docker-compose.prod.yml must not publish 80 or 443"; exit 1
+          fi

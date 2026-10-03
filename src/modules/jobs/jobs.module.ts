@@ -5,7 +5,7 @@ import { EventsModule } from '../events/events.module';
 import { EventsProcessor } from '../events/events.processor';
 import { FinanceModule } from '../finance/finance.module';
 import { InboxModule } from '../inbox/inbox.module';
-import { RequestIngestWorker } from '../geo/request-ingest.worker';
+import { ActivityTailWorker } from '../geo/activity-tail.worker';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { CampaignProcessor } from '../notifications/campaign.processor';
 import { RiskModule } from '../risk/risk.module';
@@ -52,7 +52,7 @@ import { QUEUES } from './queues';
     ExportsProcessor,
     CampaignProcessor,
     EventsProcessor,
-    RequestIngestWorker,
+    ActivityTailWorker,
   ],
 })
 export class JobsModule {}

@@ -1,14 +1,12 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import type { ChannelType } from '../../generated/zapiack/client';
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { AuditService } from '../../common/audit/audit.service';
-import { ApiCoreClient } from '../../integrations/api-core/api-core.client';
 import type { StaffPrincipal } from '../../common/auth/staff-principal';
 import type {
   ListPricingDto,
   SetMarginTargetDto,
-  UpsertPlanDto,
-  UpsertPricingDto,
   UpsertProviderCostDto,
 } from './dto/plans.dto';
 
@@ -22,140 +20,65 @@ export class PlansService {
   constructor(
     private readonly zapiack: ZapiackPrismaService,
     private readonly admin: AdminPrismaService,
-    private readonly apiCore: ApiCoreClient,
     private readonly audit: AuditService,
   ) {}
 
-  listPlans() {
-    return this.zapiack.read.plan.findMany({
+  async listPlans() {
+    const data = await this.zapiack.read.plans.findMany({
       orderBy: { name: 'asc' },
       include: { _count: { select: { subscriptions: true } } },
     });
-  }
-
-  async upsertPlan(actor: StaffPrincipal, dto: UpsertPlanDto) {
-    const before = dto.id
-      ? await this.zapiack.read.plan.findUnique({ where: { id: dto.id } })
-      : null;
-
-    const result = await this.apiCore.upsertPlan(
-      {
-        id: dto.id,
-        name: dto.name,
-        billingType: dto.billingType,
-        priceNgn: dto.priceNgn,
-        interval: dto.interval,
-        active: dto.active ?? true,
-      },
-      { actorId: actor.id, actorEmail: actor.email },
-    );
-
-    await this.audit.record({
-      actor,
-      action: before ? 'plans.updated' : 'plans.created',
-      targetType: 'plan',
-      targetId: result?.id ?? dto.id,
-      reason: dto.reason,
-      before,
-      after: dto,
-    });
-
-    return result;
+    return { data, hasMore: false, nextCursor: null };
   }
 
   // ---------------------------------------------------------------- pricing
 
+  // ---------------------------------------------------------------- provider costs
+
+  /**
+   * Customer-facing prices: credits per product per destination country. The product
+   * keeps no effective-from history on these rows, so `asOf` and `includeHistory`
+   * have nothing to act on yet.
+   */
   async listPricing(query: ListPricingDto) {
     const asOf = query.asOf ? new Date(query.asOf) : new Date();
 
-    const rows = await this.zapiack.read.channelPricing.findMany({
+    const rows = await this.zapiack.read.productPricing.findMany({
       where: {
-        ...(query.channel ? { channel: query.channel as never } : {}),
-        ...(query.accountId ? { accountId: query.accountId } : {}),
-        ...(query.includeHistory
-          ? {}
-          : {
-              effectiveFrom: { lte: asOf },
-              OR: [{ effectiveTo: null }, { effectiveTo: { gt: asOf } }],
-            }),
+        ...(query.includeHistory ? {} : { isActive: true }),
+        ...(query.channel
+          ? { product: { channel: query.channel as ChannelType } }
+          : {}),
       },
-      orderBy: [{ channel: 'asc' }, { effectiveFrom: 'desc' }],
-      include: { plan: { select: { id: true, name: true } } },
-    });
-
-    // Pair each price with the provider cost in force at the same moment, so the
-    // pricing screen can show margin without a second round trip.
-    const costs = await this.admin.providerCost.findMany({
-      where: {
-        ...(query.channel ? { channel: query.channel } : {}),
-        effectiveFrom: { lte: asOf },
-        OR: [{ effectiveTo: null }, { effectiveTo: { gt: asOf } }],
-      },
-      orderBy: { effectiveFrom: 'desc' },
+      orderBy: [{ countryCode: 'asc' }],
+      include: { product: { select: { id: true, name: true, channel: true } } },
     });
 
     return {
       asOf,
-      pricing: rows.map((row) => {
-        const cost = costs.find(
-          (c) =>
-            c.channel === row.channel &&
-            (c.country ?? null) === (row.country ?? null) &&
-            (c.network ?? null) === (row.network ?? null),
-        );
-        return {
-          ...row,
-          providerCostNgn: cost?.unitCostNgn ?? null,
-          provider: cost?.provider ?? null,
-          marginNgn:
-            cost && row.unitPriceNgn
-              ? row.unitPriceNgn.minus(cost.unitCostNgn).toString()
-              : null,
-        };
-      }),
+      data: rows.map((row) => ({
+        id: row.id,
+        channel: row.product.channel,
+        product: { id: row.product.id, name: row.product.name },
+        countryCode: row.countryCode,
+        creditCost: row.creditCost,
+        isActive: row.isActive,
+        updatedAt: row.updatedAt,
+        // Provider cost is not recorded in the product schema, so margin cannot be
+        // shown. The Admin DB's ProviderCost table is ready for when it is.
+        providerCostNgn: null,
+        margin: null,
+      })),
     };
   }
 
-  async upsertPricing(actor: StaffPrincipal, dto: UpsertPricingDto) {
-    if (dto.accountId && !dto.effectiveTo) {
-      // Enterprise deals that never expire become invisible discounts nobody reviews.
-      throw new BadRequestException(
-        'Per-account pricing must carry an expiry (effectiveTo)',
-      );
-    }
-    if (
-      dto.effectiveTo &&
-      new Date(dto.effectiveTo) <= new Date(dto.effectiveFrom)
-    ) {
-      throw new BadRequestException('effectiveTo must be after effectiveFrom');
-    }
-
-    const result = await this.apiCore.upsertChannelPricing(dto, {
-      actorId: actor.id,
-      actorEmail: actor.email,
-    });
-
-    await this.audit.record({
-      actor,
-      action: 'pricing.updated',
-      targetType: 'channel_pricing',
-      targetId: result?.id,
-      reason: dto.reason,
-      after: dto,
-    });
-
-    return result;
-  }
-
-  // ---------------------------------------------------------------- provider costs
-
-  listProviderCosts(query: {
+  async listProviderCosts(query: {
     channel?: string;
     provider?: string;
     includeHistory?: boolean;
   }) {
     const now = new Date();
-    return this.admin.providerCost.findMany({
+    const data = await this.admin.providerCost.findMany({
       where: {
         ...(query.channel ? { channel: query.channel } : {}),
         ...(query.provider ? { provider: query.provider } : {}),
@@ -172,6 +95,7 @@ export class PlansService {
         { effectiveFrom: 'desc' },
       ],
     });
+    return { data, hasMore: false, nextCursor: null };
   }
 
   async upsertProviderCost(actor: StaffPrincipal, dto: UpsertProviderCostDto) {

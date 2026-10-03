@@ -12,7 +12,7 @@ import {
   MinLength,
   ValidateNested,
 } from 'class-validator';
-import { ReasonDto } from '../../../common/dto/common.dto';
+import { CursorPageDto, ReasonDto } from '../../../common/dto/common.dto';
 
 /** Declarative audience filter, compiled to a read against the Zapiack DB. */
 export class SegmentFilterDto {
@@ -47,6 +47,22 @@ export class SegmentFilterDto {
   @IsOptional()
   @IsBoolean()
   kycVerified?: boolean;
+}
+
+const CAMPAIGN_STATUSES = [
+  'DRAFT',
+  'PENDING_APPROVAL',
+  'SCHEDULED',
+  'SENDING',
+  'SENT',
+  'FAILED',
+  'CANCELLED',
+] as const;
+
+export class ListCampaignsDto extends CursorPageDto {
+  @IsOptional()
+  @IsIn(CAMPAIGN_STATUSES)
+  status?: (typeof CAMPAIGN_STATUSES)[number];
 }
 
 export class UpsertSegmentDto {

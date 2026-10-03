@@ -146,9 +146,30 @@ Inbound events (`usage.recorded`, `request.logged`, `auth.signin`, `payment.*`,
 job keyed by event id. A sweep re-queues anything stuck, which is the reason for
 persisting first.
 
+## API reference
+
+The service documents itself from its own controllers and DTOs, so the description
+cannot drift from what it enforces.
+
+| Where | What |
+| --- | --- |
+| `GET /admin/v1/docs` | browsable reference, signed in and callable |
+| `GET /admin/v1/docs-json` | OpenAPI 3 document |
+| `openapi.json` | the same document committed, with a real response example on every GET |
+| `docs/api-payloads.md` | every write endpoint's accepted fields, as a table |
+
+Regenerate both files against a running service and a seeded database:
+
+```bash
+DOCS_EMAIL=you@zapiack.com DOCS_PASSWORD='…' DOCS_TOTP_SECRET=… npm run docs:generate
+```
+
+Served outside production; `ADMIN_EXPOSE_DOCS=true` enables it elsewhere. It exposes
+the shape of the API, never any data.
+
 ## Deploying
 
-One DigitalOcean droplet: Caddy terminates TLS in front of a `web` container and a
+One DigitalOcean droplet: the Caddy already on it proxies to a `web` container and a
 `worker` container, with Postgres and Redis alongside and a one-shot migration job that
 runs before either starts. GitHub Actions builds the image, pushes it to GHCR and
 restarts the stack on every push to `main`.

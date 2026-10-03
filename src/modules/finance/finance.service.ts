@@ -10,12 +10,18 @@ import type { FinanceQueryDto } from './dto/finance.dto';
 const D = (v: unknown) => Number(v ?? 0);
 
 /**
- * Every figure here comes from the rollups, in NGN and Africa/Lagos days.
+ * Every figure here comes from the rollups, over Africa/Lagos days.
  *
- *   Gross profit = recognised revenue − provider cost − payment processing fees
+ * **Profit is not reported.** Gross profit needs provider cost and payment processing
+ * fees, and the product schema records neither: `LogEvent` carries what the customer
+ * was charged, not what the send cost Zapiack, and `Transactions` carries no gateway
+ * fee. Publishing a profit figure from what is available would mean inventing two of
+ * its three terms. The Admin DB's `ProviderCost` table is ready for the day api-core
+ * stores cost at send time; until then these endpoints report revenue and cash only.
  *
- * Recognised revenue counts credits when they are consumed, not when they are bought,
- * which is why the cash view is reported beside it rather than instead of it.
+ * Recognised revenue counts credits when they are **consumed**, not when they are
+ * bought, which is why the cash view sits beside it rather than instead of it.
+ * Consumption is measured in credits; cash is naira.
  */
 @Injectable()
 export class FinanceService {
@@ -33,7 +39,7 @@ export class FinanceService {
     return dims;
   }
 
-  /** Recognised revenue, provider cost and gross profit across the chosen dimensions. */
+  /** Recognised revenue across the chosen dimensions. */
   async profit(dto: FinanceQueryDto) {
     const { start, end } = resolveRange(dto.from, dto.to, 30);
     const dims = this.groupClause(dto);
@@ -92,7 +98,7 @@ export class FinanceService {
           ? round(grossProfit / recognisedRevenue, 4)
           : null,
       },
-      breakdown: rows.map((row) => {
+      data: rows.map((row) => {
         const revenue = D(row._sum.revenueNgn);
         const cost = D(row._sum.costNgn);
         return {
@@ -150,19 +156,15 @@ export class FinanceService {
         const c = cashByDate.get(key);
         const s = snapByDate.get(key);
 
-        const revenue = D(u?._sum.revenueNgn) + D(s?.subscriptionRevenueNgn);
-        const cost = D(u?._sum.costNgn);
-        const fees = D(c?.feesNgn);
-
         return {
           date,
-          recognisedRevenueNgn: round(revenue),
-          providerCostNgn: round(cost),
-          paymentFeesNgn: round(fees),
-          grossProfitNgn: round(revenue - cost - fees),
+          creditsConsumed: round(D(u?._sum.revenueNgn)),
+          subscriptionRevenueNgn: round(D(s?.subscriptionRevenueNgn)),
           cashCollectedNgn: round(D(c?.collectedNgn) - D(c?.refundedNgn)),
-          creditLiabilityNgn: round(D(s?.creditLiabilityNgn)),
+          creditLiability: round(D(s?.creditLiabilityNgn)),
           mrrNgn: round(D(s?.mrrNgn)),
+          providerCostNgn: null,
+          grossProfitNgn: null,
         };
       }),
     };
@@ -199,11 +201,12 @@ export class FinanceService {
       cashCollectedNgn: round(collected - refunded),
       grossCollectedNgn: round(collected),
       refundedNgn: round(refunded),
-      paymentFeesNgn: round(D(agg._sum.feesNgn)),
+      // Gateway fees are not recorded on a transaction.
+      paymentFeesNgn: null,
       successfulPayments: agg._sum.paymentCount ?? 0,
       failedPayments: agg._sum.failedCount ?? 0,
-      /** Unspent balances at period end — money we hold but have not earned. */
-      creditLiabilityNgn: round(D(latest?.creditLiabilityNgn)),
+      /** Unspent credits at period end — value we hold but have not earned. */
+      creditLiability: round(D(latest?.creditLiabilityNgn)),
     };
   }
 
@@ -252,11 +255,11 @@ export class FinanceService {
     return {
       range: { from: start, to: end },
       activeAccounts: current.length,
-      arpaNgn: current.length ? round(currentRevenue / current.length) : 0,
+      arpaCredits: current.length ? round(currentRevenue / current.length) : 0,
       revenueChurn: priorRevenue
         ? round(churnedRevenue / priorRevenue, 4)
         : null,
-      churnedRevenueNgn: round(churnedRevenue),
+      churnedCredits: round(churnedRevenue),
       priorPeriod: {
         from: priorStart,
         to: start,

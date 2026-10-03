@@ -30,8 +30,11 @@ export class SegmentsService {
     private readonly audit: AuditService,
   ) {}
 
-  list() {
-    return this.admin.segment.findMany({ orderBy: { name: 'asc' } });
+  async list() {
+    const data = await this.admin.segment.findMany({
+      orderBy: { name: 'asc' },
+    });
+    return { data, hasMore: false, nextCursor: null };
   }
 
   async upsert(actor: StaffPrincipal, dto: UpsertSegmentDto) {
@@ -80,7 +83,7 @@ export class SegmentsService {
   }
 
   async count(filter: SegmentFilterDto): Promise<number> {
-    return this.zapiack.read.account.count({
+    return this.zapiack.read.accounts.count({
       where: this.buildWhere(filter),
     });
   }
@@ -90,16 +93,22 @@ export class SegmentsService {
     filter: SegmentFilterDto,
     limit?: number,
   ): Promise<ResolvedRecipient[]> {
-    const accounts = await this.zapiack.read.account.findMany({
+    const accounts = await this.zapiack.read.accounts.findMany({
       where: this.buildWhere(filter),
-      select: { id: true, email: true, phone: true, businessName: true },
+      // Contact details come from the account owner; the account itself has none.
+      select: {
+        id: true,
+        owner: { select: { email: true, displayName: true } },
+      },
       ...(limit ? { take: limit } : {}),
     });
     return accounts.map((a) => ({
       accountId: a.id,
-      email: a.email,
-      phone: a.phone,
-      businessName: a.businessName,
+      email: a.owner.email,
+      // The product schema records no phone number, so SMS campaigns cannot be
+      // addressed from it. Email and in-app are unaffected.
+      phone: null,
+      businessName: a.owner.displayName,
     }));
   }
 

@@ -44,7 +44,7 @@ export class ServicesService {
 
     return {
       range: { from: start, to: end },
-      services: SERVICES.map((service) => {
+      data: SERVICES.map((service) => {
         const row = byChannel.get(service.channel);
         const attempted = Number(row?._sum.attempted ?? 0);
         const succeeded = Number(row?._sum.succeeded ?? 0);
@@ -99,11 +99,11 @@ export class ServicesService {
       // Failure reasons are not a rollup dimension: the set is open-ended and only
       // interesting in the top few, so this reads the source directly.
       this.zapiack.read.$queryRaw<{ reason: string | null; count: bigint }[]>`
-        SELECT "failureReason" AS reason, COUNT(*)::bigint AS count
-        FROM "usage_records"
+        SELECT "error" AS reason, COUNT(*)::bigint AS count
+        FROM "log_events"
         WHERE "channel"::text = ${service.channel}
           AND "createdAt" >= ${start} AND "createdAt" <= ${end}
-          AND "status" = 'failed'
+          AND "status" = 'FAILED'
         GROUP BY 1
         ORDER BY count DESC
         LIMIT 20
@@ -194,9 +194,9 @@ export class ServicesService {
             const [row] = await this.zapiack.read.$queryRaw<
               { hits: bigint; total: bigint }[]
             >`
-              SELECT COUNT(*) FILTER (WHERE ("attributes" ->> ${attribute})::boolean)::bigint AS hits,
-                     COUNT(*) FILTER (WHERE jsonb_exists("attributes", ${attribute}))::bigint  AS total
-              FROM "usage_records"
+              SELECT COUNT(*) FILTER (WHERE ("metadata" ->> ${attribute})::boolean)::bigint AS hits,
+                     COUNT(*) FILTER (WHERE jsonb_exists("metadata", ${attribute}))::bigint  AS total
+              FROM "log_events"
               WHERE "channel"::text = ${channel}
                 AND "createdAt" >= ${start} AND "createdAt" <= ${end}
             `;
@@ -220,10 +220,10 @@ export class ServicesService {
             { value: string | null; total: bigint }[]
           >`
             SELECT ${aggregate}(
-                     NULLIF("attributes" ->> ${attribute}, '')::numeric
+                     NULLIF("metadata" ->> ${attribute}, '')::numeric
                    )::text AS value,
-                   COUNT(*) FILTER (WHERE jsonb_exists("attributes", ${attribute}))::bigint AS total
-            FROM "usage_records"
+                   COUNT(*) FILTER (WHERE jsonb_exists("metadata", ${attribute}))::bigint AS total
+            FROM "log_events"
             WHERE "channel"::text = ${channel}
               AND "createdAt" >= ${start} AND "createdAt" <= ${end}
           `;

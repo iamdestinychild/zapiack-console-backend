@@ -10,6 +10,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { CursorPageDto } from '../../../common/dto/common.dto';
+import { BooleanQuery } from '../../../common/dto/query-transforms';
 
 const STATUSES = [
   'SUBMITTED',
@@ -38,7 +39,7 @@ export class ListSenderIdsDto extends CursorPageDto {
 
   /** Applications past their SLA target first; the queue's reason for existing. */
   @IsOptional()
-  @Type(() => Boolean)
+  @BooleanQuery()
   @IsBoolean()
   overdueOnly?: boolean;
 }

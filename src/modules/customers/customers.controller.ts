@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Param, Post, Query, Req } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+} from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
 import {
@@ -21,8 +30,11 @@ import {
   CreateNoteDto,
   CreateRiskFlagDto,
   CustomerUsageDto,
+  LedgerQueryDto,
   RevealPiiDto,
-  RevokeKeyDto,
+  SetAccountStatusDto,
+  SetApiKeyActiveDto,
+  ArchiveProjectDto,
   SearchCustomersDto,
   SuspendCustomerDto,
 } from './dto/customers.dto';
@@ -54,7 +66,7 @@ export class CustomersController {
 
   @Get(':id/ledger')
   @RequirePermissions('customers.read')
-  ledger(@Param('id') id: string, @Query() query: DateRangePageDto) {
+  ledger(@Param('id') id: string, @Query() query: LedgerQueryDto) {
     return this.customers.ledger(id, query);
   }
 
@@ -77,20 +89,14 @@ export class CustomersController {
   @Post(':id/suspend')
   @SensitiveWrite(
     { action: 'customers.suspend', targetType: 'account', targetParam: 'id' },
-    'customers.manage',
+    'customers.suspend',
   )
   suspend(
     @CurrentStaff() staff: StaffPrincipal,
     @Param('id') id: string,
     @Body() dto: SuspendCustomerDto,
-    @Req() req: Request,
   ) {
-    return this.actions.suspend(
-      staff,
-      id,
-      dto.reason,
-      req.get('idempotency-key'),
-    );
+    return this.actions.suspend(staff, id, dto.reason);
   }
 
   @Post(':id/reactivate')
@@ -100,14 +106,40 @@ export class CustomersController {
     @CurrentStaff() staff: StaffPrincipal,
     @Param('id') id: string,
     @Body() dto: ReasonDto,
-    @Req() req: Request,
   ) {
-    return this.actions.reactivate(
-      staff,
-      id,
-      dto.reason,
-      req.get('idempotency-key'),
-    );
+    return this.actions.reactivate(staff, id, dto.reason);
+  }
+
+  /** Ends the relationship. Refused while the account still holds credits. */
+  @Post(':id/ban')
+  @SensitiveWrite(
+    { action: 'customers.ban', targetType: 'account', targetParam: 'id' },
+    'customers.suspend',
+  )
+  ban(
+    @CurrentStaff() staff: StaffPrincipal,
+    @Param('id') id: string,
+    @Body() dto: ReasonDto,
+  ) {
+    return this.actions.ban(staff, id, dto.reason);
+  }
+
+  /** Any transition in one call, for states without a dedicated route. */
+  @Patch(':id/status')
+  @SensitiveWrite(
+    {
+      action: 'customers.status_changed',
+      targetType: 'account',
+      targetParam: 'id',
+    },
+    'customers.suspend',
+  )
+  setStatus(
+    @CurrentStaff() staff: StaffPrincipal,
+    @Param('id') id: string,
+    @Body() dto: SetAccountStatusDto,
+  ) {
+    return this.actions.setStatus(staff, id, dto.status, dto.reason);
   }
 
   @Post(':id/force-logout')
@@ -127,22 +159,44 @@ export class CustomersController {
     );
   }
 
-  @Post(':id/revoke-key')
-  @RequirePermissions('customers.manage')
-  @Idempotent()
-  revokeKey(
+  @Patch(':id/api-keys')
+  @SensitiveWrite(
+    {
+      action: 'customers.revoke_key',
+      targetType: 'api_key',
+      targetParam: 'id',
+    },
+    'customers.manage',
+  )
+  setApiKeyActive(
     @CurrentStaff() staff: StaffPrincipal,
     @Param('id') id: string,
-    @Body() dto: RevokeKeyDto,
-    @Req() req: Request,
+    @Body() dto: SetApiKeyActiveDto,
   ) {
-    return this.actions.revokeApiKey(
+    return this.actions.setApiKeyActive(
       staff,
       id,
       dto.apiKeyId,
+      dto.isActive,
       dto.reason,
-      req.get('idempotency-key'),
     );
+  }
+
+  @Post(':id/projects/archive')
+  @SensitiveWrite(
+    {
+      action: 'customers.project_archived',
+      targetType: 'project',
+      targetParam: 'id',
+    },
+    'customers.manage',
+  )
+  archiveProject(
+    @CurrentStaff() staff: StaffPrincipal,
+    @Param('id') id: string,
+    @Body() dto: ArchiveProjectDto,
+  ) {
+    return this.actions.archiveProject(staff, id, dto.projectId, dto.reason);
   }
 
   @Post(':id/change-plan')

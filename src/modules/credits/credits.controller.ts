@@ -6,7 +6,8 @@ import {
   SensitiveWrite,
 } from '../../common/auth/decorators';
 import type { StaffPrincipal } from '../../common/auth/staff-principal';
-import { CursorPageDto, ReasonDto } from '../../common/dto/common.dto';
+import { ReasonDto } from '../../common/dto/common.dto';
+import { ListCreditAdjustmentsDto } from './dto/credits.dto';
 import { CreditAdjustmentDto } from '../customers/dto/customers.dto';
 import { CreditsService } from './credits.service';
 
@@ -29,9 +30,7 @@ export class CreditsController {
 
   @Get('credit-adjustments')
   @RequirePermissions('credits.adjust')
-  list(
-    @Query() query: CursorPageDto & { accountId?: string; status?: string },
-  ) {
+  list(@Query() query: ListCreditAdjustmentsDto) {
     return this.credits.list(query);
   }
 

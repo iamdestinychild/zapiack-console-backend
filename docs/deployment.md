@@ -1,26 +1,30 @@
 # Deploying admin-core
 
-One DigitalOcean droplet running five containers behind Caddy, deployed by GitHub
-Actions on every push to `main`.
+One DigitalOcean droplet. The **Caddy that already runs on it** terminates TLS and proxies
+to admin-core; this stack does not bring a Caddy of its own. GitHub Actions builds the
+image, pushes it to GHCR, copies the compose file over and restarts the stack on every
+push to `main`.
 
 ```
-                    :443 / :80
-                        │
-                   ┌────▼────┐
-                   │  Caddy  │  automatic TLS, security headers, SSE passthrough
-                   └────┬────┘
-                        │ admin_net (nothing else is published)
-        ┌───────────────┼───────────────┬──────────────┐
-   ┌────▼────┐    ┌─────▼─────┐   ┌─────▼────┐   ┌─────▼────┐
-   │   web   │    │  worker   │   │ postgres │   │  redis   │
-   │ :3001   │    │  :3002    │   │          │   │          │
-   └─────────┘    └───────────┘   └──────────┘   └──────────┘
+                 :443 / :80
+                     |
+              +------v------+
+              | host Caddy  |   already installed, configured by hand
+              +------+------+
+                     | 127.0.0.1:3001   (loopback only)
+   +-----------------v--------------------------------------+
+   |  docker compose  (network: admin_net, nothing else      |
+   |                   published)                            |
+   |   web :3001   worker :3002   postgres   redis           |
+   +---------------------------------------------------------+
 ```
 
-`web` serves HTTP. `worker` runs the schedulers, queue processors and the
-request-ingest loop. They are the same image with a different `ADMIN_ROLE`, so a
-five-minute rollup cannot slow a staff member's request. A one-shot `migrate`
-container runs `prisma migrate deploy` to completion before either starts.
+`web` serves HTTP. `worker` runs schedulers, queue processors and the activity-log tail.
+They are the same image with a different `ADMIN_ROLE`. A one-shot `migrate` container runs
+`prisma migrate deploy` to completion before either starts.
+
+**The stack publishes exactly one port, `127.0.0.1:3001`.** Ports 80 and 443 belong to
+your Caddy, and CI fails if the compose file ever tries to claim them.
 
 ## Sizing
 
@@ -32,10 +36,10 @@ roughly 20 million requests a day, and the read path is already isolated behind
 
 ## First-time setup
 
-**1. DNS before anything else.** Point `ADMIN_DOMAIN` at the droplet's IPv4 and let it
-propagate. Caddy requests a certificate the moment it starts; if the record is wrong
-it will fail and back off, and Let's Encrypt rate-limits repeated failures. While
-testing, uncomment the staging CA line at the top of the `Caddyfile`.
+**1. DNS before anything else.** Point the admin API hostname at the droplet,
+`134.209.177.140`, and let it propagate. Caddy requests a certificate the first time it
+serves the name; a wrong record makes it fail and back off, and Let's Encrypt rate-limits
+repeated failures.
 
 **2. Prepare the droplet.**
 
@@ -61,8 +65,7 @@ ufw allow OpenSSH && ufw allow 80 && ufw allow 443 && ufw --force enable
 
 ```
 /srv/admin-core/
-├── docker-compose.prod.yml   # from the repo
-├── Caddyfile                 # from the repo
+├── docker-compose.prod.yml   # copied by the deploy workflow on every run
 ├── .env                      # NOT from the repo — see below
 └── data/
     └── GeoLite2-City.mmdb    # licensed, downloaded separately
@@ -73,8 +76,6 @@ commit it. The ones with no safe default:
 
 | Variable | Notes |
 | --- | --- |
-| `ADMIN_DOMAIN` | the console API hostname, e.g. `admin-api.zapiack.com` |
-| `ACME_EMAIL` | where Let's Encrypt sends expiry warnings |
 | `ADMIN_CORS_ORIGIN` | the console frontend origin, exactly — no wildcard |
 | `ADMIN_JWT_SECRET` | `openssl rand -base64 48` |
 | `DB_PASSWORD`, `REDIS_PASSWORD` | generate, do not reuse |
@@ -94,11 +95,28 @@ REDIS_URL=redis://:<pass>@redis:6379
 `ZAPIACK_READ_DATABASE_URL` is the one that points **off** this droplet, at the product
 read replica, through a role holding `SELECT` and nothing else.
 
-**5. GeoLite2.** Download `GeoLite2-City.mmdb` into `./data/`. Without it the service
+**5. Add the site to your Caddy.** Copy the block from `deploy/caddy/admin-core.caddy` into
+the droplet's Caddyfile (or into a file it imports), change the hostname, then:
+
+```bash
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+```
+
+It has no global options block on purpose — a Caddyfile may only have one. It does carry
+the two things this service needs that a plain `reverse_proxy` would break: the live map
+and staff inbox are long-lived event streams and must not be buffered, and sender ID zips
+stream for minutes.
+
+*Assumes Caddy runs on the host. If it runs in Docker, `127.0.0.1:3001` is the
+container's own loopback, not the droplet's — attach it to `admin_net` and proxy to
+`admin_core_web:3001` instead.*
+
+**6. GeoLite2.** Download `GeoLite2-City.mmdb` into `./data/`. Without it the service
 still runs; locations read as unknown and `/health/ready` reports `geoip: false`. A
 weekly job reloads it in place, so refreshing the file needs no restart.
 
-**6. First deploy.** Push to `main`, or run the workflow manually. Then seed the roles
+**7. First deploy.** Push to `main`, or run the workflow manually. Then seed the roles
 and the first super admin, once:
 
 ```bash
@@ -127,7 +145,7 @@ environment, so you can require a reviewer there if you want a manual gate.
 ## What a deploy does
 
 1. Builds the image and pushes it to GHCR tagged with the commit SHA and `latest`.
-2. SSHes in, pins `ADMIN_IMAGE` in `.env` to that exact SHA, and pulls.
+2. Copies `docker-compose.prod.yml` to the droplet, pins `ADMIN_IMAGE` in `.env` to that exact SHA, and pulls.
 3. `docker compose up -d` — the `migrate` container runs to completion first; `web` and
    `worker` only start once it exits cleanly.
 4. Polls `/health/ready` for up to 150 seconds and fails the run if it never reports
@@ -170,14 +188,13 @@ second layer but are not point-in-time.
 **Logs.** `docker compose -f docker-compose.prod.yml logs -f admin-core`. JSON, with a
 `requestId` that matches the one the API returns to the console and the one api-core
 logs, so a staff member quoting an error id is enough to find the request end to end.
-Caddy's access log is in the `caddy_logs` volume, rolled at 50 MiB.
+Caddy's access log is wherever the droplet's Caddy writes it (`journalctl -u caddy` by default).
 
 **Is it healthy?** `/health/ready` reports each dependency separately. `GET
 /admin/v1/overview/health` reports rollup lag per job — past 15 minutes, something is
 wrong with the worker rather than with the data.
 
-**Certificates** renew themselves. The `caddy_data` volume holds them; losing it means
-re-issuing on next start, which is rate limited, so keep it.
+**Certificates** are Caddy's, renewed by the instance already on the droplet.
 
 **Scaling past one droplet.** Web and worker already run as separate containers, so the
 first move is more web containers behind Caddy. The scheduler uses deterministic job
@@ -186,8 +203,8 @@ to run one until the queue actually backs up.
 
 ## Things that will catch you out
 
-- **Caddy needs DNS first.** Starting before the record resolves burns Let's Encrypt
-  attempts. Use the staging CA while you are still moving things.
+- **Caddy needs DNS first.** Serving a new name before its record resolves burns Let's
+  Encrypt attempts.
 - **`.env` lives only on the droplet.** It is gitignored and nothing in CI writes it. A
   fresh droplet with no `.env` will fail at boot with a list of missing variables,
   which is the intended behaviour.

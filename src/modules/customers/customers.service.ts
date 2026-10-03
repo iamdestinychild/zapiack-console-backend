@@ -1,20 +1,16 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '../../generated/zapiack/client';
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { AuditService } from '../../common/audit/audit.service';
-import {
-  maskApiKeyPrefix,
-  maskEmail,
-  maskIp,
-  maskPhone,
-} from '../../common/http/masking';
+import { maskApiKeyPrefix, maskEmail, maskIp } from '../../common/http/masking';
 import {
   buildPage,
   cursorWhere,
   decodeCursor,
   encodeCursor,
 } from '../../common/http/pagination';
-import { resolveRange } from '../../common/time/lagos';
+import { lagosDateOnly, resolveRange } from '../../common/time/lagos';
 import type { StaffPrincipal } from '../../common/auth/staff-principal';
 import type {
   CustomerUsageDto,
@@ -23,9 +19,17 @@ import type {
 } from './dto/customers.dto';
 
 /**
- * Reads for the customer list and Customer 360. Everything here comes from the
- * Zapiack read replica plus the staff-owned annotations in the Admin DB; nothing in
- * this service writes to product data.
+ * Reads for the customer list and Customer 360.
+ *
+ * An account in the product schema carries almost no identity of its own: no business
+ * name, no email, no phone. The owner's email and display name come from `Users` via
+ * `Accounts.userId`, and a business name only exists where the account has filed a
+ * sender ID application. Phone number and KYC status are not recorded anywhere, so
+ * those fields are returned as null rather than quietly omitted — the console shows a
+ * blank, not a wrong value.
+ *
+ * Balances are **credits**, not naira: `Accounts.creditBalance` is spent against
+ * `ProductPricing.creditCost`.
  */
 @Injectable()
 export class CustomersService {
@@ -36,8 +40,8 @@ export class CustomersService {
   ) {}
 
   /**
-   * One search box over six identifiers. An account id or API key prefix is matched
-   * exactly; free text falls back to a case-insensitive contains across the rest.
+   * One search box over the identifiers that actually exist: account id, owner email
+   * or name, business name from a sender ID filing, API key prefix, and sender ID.
    */
   async search(query: SearchCustomersDto) {
     const limit = query.limit ?? 50;
@@ -47,13 +51,18 @@ export class CustomersService {
     let idsFromRelations: string[] | undefined;
     if (q) {
       const [byKey, bySenderId] = await Promise.all([
-        this.zapiack.read.apiKey.findMany({
-          where: { prefix: { startsWith: q } },
+        this.zapiack.read.apiKeys.findMany({
+          where: { keyPrefix: { startsWith: q } },
           select: { accountId: true },
           take: 200,
         }),
         this.zapiack.read.senderIdApplication.findMany({
-          where: { senderId: { equals: q, mode: 'insensitive' } },
+          where: {
+            OR: [
+              { senderId: { equals: q, mode: 'insensitive' } },
+              { businessName: { contains: q, mode: 'insensitive' } },
+            ],
+          },
           select: { accountId: true },
           take: 200,
         }),
@@ -75,47 +84,51 @@ export class CustomersService {
         return { data: [], nextCursor: null, hasMore: false };
     }
 
-    const accounts = await this.zapiack.read.account.findMany({
-      where: {
-        ...(cursor
-          ? {
-              OR: [
-                { createdAt: { lt: new Date(cursor.createdAt) } },
-                {
-                  createdAt: new Date(cursor.createdAt),
-                  id: { lt: cursor.id },
-                },
-              ],
-            }
-          : {}),
-        ...(query.status ? { status: query.status } : {}),
-        ...(query.country ? { country: query.country } : {}),
-        ...(flaggedIds ? { id: { in: flaggedIds } } : {}),
-        ...(query.planId
-          ? {
-              subscriptions: {
-                some: { planId: query.planId, status: 'active' },
-              },
-            }
-          : {}),
-        ...(q
-          ? {
-              OR: [
-                { id: q },
-                { email: { contains: q, mode: 'insensitive' as const } },
-                { businessName: { contains: q, mode: 'insensitive' as const } },
-                { phone: { contains: q } },
-                ...(idsFromRelations ? [{ id: { in: idsFromRelations } }] : []),
-              ],
-            }
-          : {}),
-      },
+    // Built up explicitly: the cursor and the search term both contribute an OR, and
+    // they must be ANDed rather than one overwriting the other.
+    const conditions: Prisma.AccountsWhereInput[] = [];
+
+    if (cursor) {
+      conditions.push({
+        OR: [
+          { createdAt: { lt: new Date(cursor.createdAt) } },
+          { createdAt: new Date(cursor.createdAt), id: { lt: cursor.id } },
+        ],
+      });
+    }
+    if (query.status) conditions.push({ accountStatus: query.status });
+    if (query.country) conditions.push({ countryCode: query.country });
+    if (flaggedIds) conditions.push({ id: { in: flaggedIds } });
+    if (query.planId) {
+      conditions.push({
+        subscriptions: { some: { planId: query.planId, status: 'ACTIVE' } },
+      });
+    }
+    if (q) {
+      const matches: Prisma.AccountsWhereInput[] = [
+        { id: q },
+        { owner: { email: { contains: q, mode: 'insensitive' } } },
+        { owner: { displayName: { contains: q, mode: 'insensitive' } } },
+      ];
+      if (idsFromRelations) matches.push({ id: { in: idsFromRelations } });
+      conditions.push({ OR: matches });
+    }
+
+    const accounts = await this.zapiack.read.accounts.findMany({
+      where: conditions.length ? { AND: conditions } : {},
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: limit + 1,
       include: {
+        owner: { select: { email: true, displayName: true } },
         subscriptions: {
-          where: { status: 'active' },
+          where: { status: 'ACTIVE' },
           include: { plan: { select: { id: true, name: true } } },
+          take: 1,
+        },
+        // The only place a business name is recorded.
+        senderIdApplications: {
+          select: { businessName: true },
+          orderBy: { createdAt: 'desc' },
           take: 1,
         },
       },
@@ -133,14 +146,15 @@ export class CustomersService {
     return {
       data: page.map((account) => ({
         id: account.id,
-        businessName: account.businessName,
+        businessName: account.senderIdApplications[0]?.businessName ?? null,
+        ownerName: account.owner.displayName,
         // Masked by default; the reveal endpoint is the only way to the real values.
-        email: maskEmail(account.email),
-        phone: maskPhone(account.phone),
-        status: account.status,
-        balanceNgn: account.balance,
-        country: account.country,
-        kycVerified: account.kycVerified,
+        email: maskEmail(account.owner.email),
+        phone: null,
+        status: account.accountStatus,
+        creditBalance: account.creditBalance,
+        country: account.countryCode,
+        kycVerified: null,
         plan: account.subscriptions[0]?.plan ?? null,
         openRiskFlags: flagCount.get(account.id) ?? 0,
         createdAt: account.createdAt,
@@ -156,22 +170,30 @@ export class CustomersService {
     };
   }
 
-  /**
-   * Customer 360. One call so the screen does not fan out into a dozen requests;
-   * the heavier tabs (ledger, usage, requests) paginate separately.
-   */
+  /** Customer 360 in one call; the heavier tabs paginate separately. */
   async get(accountId: string) {
-    const account = await this.zapiack.read.account.findUnique({
+    const account = await this.zapiack.read.accounts.findUnique({
       where: { id: accountId },
       include: {
-        users: { orderBy: { createdAt: 'asc' }, take: 20 },
-        apiKeys: { orderBy: { createdAt: 'desc' }, take: 20 },
+        owner: true,
+        projects: {
+          where: { isDeleted: false },
+          orderBy: { createdAt: 'asc' },
+          take: 20,
+        },
+        apiKeys: {
+          where: { isDeleted: false },
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+        },
         subscriptions: {
-          orderBy: { startedAt: 'desc' },
+          orderBy: { createdAt: 'desc' },
           take: 5,
           include: { plan: true },
         },
-        senderIds: { orderBy: { submittedAt: 'desc' }, take: 20 },
+        senderIdApplications: { orderBy: { createdAt: 'desc' }, take: 20 },
+        accountBillings: { include: { product: true } },
+        usageBuffers: true,
       },
     });
     if (!account) throw new NotFoundException('Account not found');
@@ -202,7 +224,6 @@ export class CustomersService {
             succeeded: true,
             failed: true,
             revenueNgn: true,
-            costNgn: true,
           },
         }),
         this.admin.senderIdReview.findMany({
@@ -219,45 +240,81 @@ export class CustomersService {
     return {
       profile: {
         id: account.id,
-        businessName: account.businessName,
-        email: maskEmail(account.email),
-        phone: maskPhone(account.phone),
-        status: account.status,
-        country: account.country,
+        businessName: account.senderIdApplications[0]?.businessName ?? null,
+        ownerName: account.owner.displayName,
+        email: maskEmail(account.owner.email),
+        emailVerified: account.owner.emailVerified,
+        phone: null,
+        status: account.accountStatus,
+        country: account.countryCode,
+        billingAddress: account.billingAddress,
         createdAt: account.createdAt,
+        lastLoginAt: account.owner.lastLoginAt,
         piiMasked: true,
       },
-      kyc: {
-        verified: account.kycVerified,
-        hasDetails: Boolean(account.kycDetails),
-      },
-      balanceNgn: account.balance,
+      // Neither KYC status nor a phone number is recorded in the product schema.
+      kyc: { verified: null, hasDetails: false },
+      creditBalance: account.creditBalance,
+      welcomeBonusGrantedAt: account.welcomeBonusGrantedAt,
+      currentPeriodEnd: account.currentPeriodEnd,
       subscription: account.subscriptions[0]
         ? {
             id: account.subscriptions[0].id,
             status: account.subscriptions[0].status,
+            channel: account.subscriptions[0].channel,
             plan: account.subscriptions[0].plan,
+            isTrial: account.subscriptions[0].isTrial,
+            usageCount: account.subscriptions[0].usageCount,
             currentPeriodEnd: account.subscriptions[0].currentPeriodEnd,
           }
         : null,
-      users: account.users.map((u) => ({
-        id: u.id,
-        name: [u.firstName, u.lastName].filter(Boolean).join(' ') || null,
-        email: maskEmail(u.email),
-        phone: maskPhone(u.phone),
-        lastLoginAt: u.lastLoginAt,
+      billing: account.accountBillings.map((b) => ({
+        channel: b.channel,
+        billingType: b.billingType,
+        product: b.product.name,
       })),
+      quotaUsage: account.usageBuffers.map((u) => ({
+        channel: u.channel,
+        dailyCount: u.dailyCount,
+        monthlyCount: u.monthlyCount,
+        lastSyncedAt: u.lastSyncedAt,
+      })),
+      projects: account.projects.map((p) => ({
+        id: p.id,
+        name: p.name,
+        slug: p.slug,
+        emailUsageCount: p.emailUsageCount,
+        apiUsageCount: p.apiUsageCount,
+        createdAt: p.createdAt,
+      })),
+      users: [
+        {
+          id: account.owner.id,
+          name: account.owner.displayName,
+          email: maskEmail(account.owner.email),
+          phone: null,
+          lastLoginAt: account.owner.lastLoginAt,
+          role: 'OWNER',
+        },
+      ],
       apiKeys: account.apiKeys.map((k) => ({
         id: k.id,
         name: k.name,
-        prefix: maskApiKeyPrefix(k.prefix),
+        prefix: maskApiKeyPrefix(k.keyPrefix),
+        permission: k.permission,
+        usageCount: k.usageCount,
+        isActive: k.isActive,
+        projectId: k.projectId,
         lastUsedAt: k.lastUsedAt,
-        revokedAt: k.revokedAt,
+        expiresAt: k.expiresAt,
       })),
-      senderIds: account.senderIds.map((s) => ({
+      senderIds: account.senderIdApplications.map((s) => ({
         id: s.id,
         senderId: s.senderId,
+        businessName: s.businessName,
+        cacRegNo: s.cacRegNo,
         status: s.status,
+        projectId: s.projectId,
         submittedAt: s.submittedAt,
         reviewId: reviewByApplication.get(s.id)?.id ?? null,
         slaDueAt: reviewByApplication.get(s.id)?.slaDueAt ?? null,
@@ -267,8 +324,7 @@ export class CustomersService {
         attempted: row._sum.attempted ?? 0n,
         succeeded: row._sum.succeeded ?? 0n,
         failed: row._sum.failed ?? 0n,
-        revenueNgn: row._sum.revenueNgn ?? '0',
-        costNgn: row._sum.costNgn ?? '0',
+        creditsSpent: row._sum.revenueNgn ?? '0',
       })),
       signInLocations: signIns.map((s) => ({
         occurredAt: s.occurredAt,
@@ -284,9 +340,16 @@ export class CustomersService {
     };
   }
 
+  /** The credit ledger: one row per debit, refund or top-up. */
   async ledger(
     accountId: string,
-    query: { cursor?: string; limit?: number; from?: string; to?: string },
+    query: {
+      cursor?: string;
+      limit?: number;
+      from?: string;
+      to?: string;
+      type?: 'CREDIT' | 'DEBIT' | 'REFUND';
+    },
   ) {
     const limit = query.limit ?? 50;
     const { start, end } = resolveRange(query.from, query.to, 90);
@@ -296,6 +359,7 @@ export class CustomersService {
       where: {
         accountId,
         createdAt: { gte: start, lte: end },
+        ...(query.type ? { type: query.type } : {}),
         ...(cursor
           ? {
               OR: [
@@ -323,7 +387,7 @@ export class CustomersService {
       where: {
         accountId,
         hour: -1,
-        date: { gte: start, lte: end },
+        date: { gte: lagosDateOnly(start), lte: lagosDateOnly(end) },
         ...(query.channel ? { channel: query.channel } : {}),
       },
       _sum: {
@@ -332,7 +396,6 @@ export class CustomersService {
         failed: true,
         units: true,
         revenueNgn: true,
-        costNgn: true,
       },
       orderBy: { date: 'asc' },
     });
@@ -346,13 +409,15 @@ export class CustomersService {
         succeeded: row._sum.succeeded ?? 0n,
         failed: row._sum.failed ?? 0n,
         units: row._sum.units ?? 0n,
-        revenueNgn: row._sum.revenueNgn ?? '0',
-        costNgn: row._sum.costNgn ?? '0',
+        creditsSpent: row._sum.revenueNgn ?? '0',
       })),
     };
   }
 
-  /** Recent API requests for this account. Raw IPs stay masked unless revealed. */
+  /**
+   * Recent API requests, read from the product's own activity log. Keys are matched
+   * by prefix because that is what the log records.
+   */
   async requests(
     accountId: string,
     query: { cursor?: string; limit?: number; from?: string; to?: string },
@@ -361,22 +426,36 @@ export class CustomersService {
     const limit = query.limit ?? 50;
     const { start, end } = resolveRange(query.from, query.to, 7);
 
-    const rows = await this.admin.requestLog.findMany({
-      where: { accountId, occurredAt: { gte: start, lte: end } },
-      orderBy: { occurredAt: 'desc' },
+    const keys = await this.zapiack.read.apiKeys.findMany({
+      where: { accountId },
+      select: { keyPrefix: true },
+    });
+    const prefixes = keys.map((k) => k.keyPrefix);
+    if (!prefixes.length) return { data: [], hasMore: false, nextCursor: null };
+
+    const rows = await this.zapiack.read.apiActivityLog.findMany({
+      where: {
+        apiKeyPrefix: { in: prefixes },
+        createdAt: { gte: start, lte: end },
+      },
+      orderBy: { createdAt: 'desc' },
       take: limit,
     });
 
     return {
       data: rows.map((row) => ({
         id: row.id,
-        occurredAt: row.occurredAt,
+        occurredAt: row.createdAt,
         endpoint: row.endpoint,
         method: row.method,
         statusCode: row.statusCode,
-        latencyMs: row.latencyMs,
-        country: row.country,
+        status: row.status,
+        service: row.service,
+        projectId: row.projectId,
+        country: row.countryCode,
         city: row.city,
+        region: row.region,
+        message: row.message,
         ip: canSeeRawIp ? row.ip : maskIp(row.ip),
       })),
       hasMore: rows.length === limit,
@@ -391,36 +470,43 @@ export class CustomersService {
    * and writes its own audit entry naming exactly which fields were shown.
    */
   async revealPii(actor: StaffPrincipal, accountId: string, dto: RevealPiiDto) {
-    const account = await this.zapiack.read.account.findUnique({
+    const account = await this.zapiack.read.accounts.findUnique({
       where: { id: accountId },
-      include: { users: { take: 50 } },
+      include: { owner: true },
     });
     if (!account) throw new NotFoundException('Account not found');
 
     const revealed: Record<string, unknown> = {};
-    if (dto.fields.includes('email')) revealed.email = account.email;
-    if (dto.fields.includes('phone')) revealed.phone = account.phone;
-    if (dto.fields.includes('kyc')) revealed.kyc = account.kycDetails;
+    if (dto.fields.includes('email')) revealed.email = account.owner.email;
     if (dto.fields.includes('users')) {
-      revealed.users = account.users.map((u) => ({
-        id: u.id,
-        email: u.email,
-        phone: u.phone,
-        firstName: u.firstName,
-        lastName: u.lastName,
-      }));
+      revealed.users = [
+        {
+          id: account.owner.id,
+          email: account.owner.email,
+          displayName: account.owner.displayName,
+          countryCode: account.owner.countryCode,
+          city: account.owner.city,
+          region: account.owner.region,
+        },
+      ];
     }
     if (dto.fields.includes('ip')) {
-      const signIns = await this.admin.signInEvent.findMany({
+      const keys = await this.zapiack.read.apiKeys.findMany({
         where: { accountId },
-        orderBy: { occurredAt: 'desc' },
-        take: 20,
-        select: { ip: true, occurredAt: true, country: true, city: true },
+        select: { keyPrefix: true },
       });
-      revealed.recentIps = signIns;
+      revealed.recentIps = await this.zapiack.read.apiActivityLog.findMany({
+        where: { apiKeyPrefix: { in: keys.map((k) => k.keyPrefix) } },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+        select: { ip: true, createdAt: true, countryCode: true, city: true },
+      });
     }
+    // Phone and KYC details are not recorded in the product schema; asking for them
+    // returns nothing rather than pretending the account has them.
+    if (dto.fields.includes('phone')) revealed.phone = null;
+    if (dto.fields.includes('kyc')) revealed.kyc = null;
 
-    // Audited before the data is returned, so a crash mid-response still leaves a trail.
     await this.audit.record({
       actor,
       action: 'pii.reveal',

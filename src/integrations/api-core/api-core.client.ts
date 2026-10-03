@@ -98,16 +98,13 @@ export class ApiCoreClient {
 
   // -------------------------------------------------------------- pricing
 
-  upsertChannelPricing(
+  /** Credits per send, per product channel and destination country. */
+  upsertProductPricing(
     input: {
       channel: string;
-      planId?: string;
-      accountId?: string;
-      country?: string;
-      network?: string;
-      unitPriceNgn: string;
-      effectiveFrom: string;
-      effectiveTo?: string;
+      countryCode: string;
+      creditCost: string;
+      isActive?: boolean;
     },
     ctx: CommandContext,
   ) {

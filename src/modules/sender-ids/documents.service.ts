@@ -1,10 +1,10 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import archiver from 'archiver';
 import type { Response } from 'express';
+import { Readable } from 'node:stream';
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { AuditService } from '../../common/audit/audit.service';
-import { S3Service } from '../../integrations/s3/s3.service';
 import type { StaffPrincipal } from '../../common/auth/staff-principal';
 
 /** Enforced on upload by api-core; re-stated here so the review screen can explain a gap. */
@@ -29,10 +29,9 @@ export class DocumentsService {
     private readonly admin: AdminPrismaService,
     private readonly zapiack: ZapiackPrismaService,
     private readonly audit: AuditService,
-    private readonly s3: S3Service,
   ) {}
 
-  private async resolve(reviewId: string, documentId: string) {
+  private async resolveDocument(reviewId: string, documentId: string) {
     const review = await this.admin.senderIdReview.findUnique({
       where: { id: reviewId },
     });
@@ -40,7 +39,8 @@ export class DocumentsService {
 
     const document = await this.zapiack.read.senderIdDocument.findFirst({
       // Scoped to the application: a document id alone is not enough to reach a file.
-      where: { id: documentId, applicationId: review.applicationId },
+      // The FK column is named senderId but holds the application id.
+      where: { id: documentId, senderId: review.applicationId },
     });
     if (!document)
       throw new NotFoundException('Document not found on this application');
@@ -48,16 +48,27 @@ export class DocumentsService {
     return { review, document };
   }
 
-  async presign(
+  /**
+   * Hands back the document's URL and records that it was accessed.
+   *
+   * Documents are served from the CDN in front of the S3 bucket
+   * (`https://cdn.zapiack.com/sms-documents/...`), so there is nothing to presign and
+   * no expiry to enforce: anyone holding the URL can fetch it. This route therefore
+   * buys the audit trail, not access control — see the note in the review module.
+   */
+  async resolve(
     actor: StaffPrincipal,
     reviewId: string,
     documentId: string,
     disposition: 'attachment' | 'inline' = 'attachment',
   ) {
-    const { review, document } = await this.resolve(reviewId, documentId);
+    const { review, document } = await this.resolveDocument(
+      reviewId,
+      documentId,
+    );
 
-    // Audited before the URL is minted: a link handed out is a download, whether or
-    // not the browser follows it.
+    // Audited before the URL is handed over: a link given out is an access, whether
+    // or not the browser follows it.
     await this.audit.record({
       actor,
       action:
@@ -70,24 +81,22 @@ export class DocumentsService {
         reviewId,
         applicationId: review.applicationId,
         accountId: review.accountId,
-        fileName: document.fileName,
-        kind: document.kind,
+        fileName: document.fileOriginalName,
+        type: document.type,
       },
     });
 
-    const link = await this.s3.presignSenderIdDocument(
-      document.objectKey,
-      document.fileName,
-      disposition,
-    );
-
     return {
-      url: link.url,
-      expiresAt: link.expiresAt,
-      fileName: document.fileName,
-      contentType: document.contentType,
-      sizeBytes: document.sizeBytes,
+      url: document.fileUrl,
+      fileName: document.fileOriginalName,
+      contentType: contentTypeOf(document.fileName),
+      type: document.type,
+      provider: document.provider,
+      uploadedAt: document.createdAt,
       disposition,
+      // The CDN URL does not expire. Kept explicit so the console does not imply
+      // a short-lived link it is not getting.
+      expiresAt: null,
     };
   }
 
@@ -102,8 +111,8 @@ export class DocumentsService {
     if (!review) throw new NotFoundException('Review not found');
 
     const documents = await this.zapiack.read.senderIdDocument.findMany({
-      where: { applicationId: review.applicationId },
-      orderBy: { uploadedAt: 'asc' },
+      where: { senderId: review.applicationId },
+      orderBy: { createdAt: 'asc' },
     });
     if (!documents.length)
       throw new NotFoundException('This application has no documents');
@@ -130,35 +139,50 @@ export class DocumentsService {
     );
     archive.on('error', (err) => {
       this.logger.error(`Zip failed for ${reviewId}: ${err.message}`);
-      // Headers are already sent, so the only honest signal left is a truncated stream.
+      // Headers are already sent, so a truncated stream is the only signal left.
       res.destroy(err);
     });
     archive.pipe(res);
 
     const seen = new Map<string, number>();
     for (const document of documents) {
-      // Two files named the same would silently overwrite inside the archive.
-      const count = seen.get(document.fileName) ?? 0;
-      seen.set(document.fileName, count + 1);
+      const count = seen.get(document.fileOriginalName) ?? 0;
+      seen.set(document.fileOriginalName, count + 1);
       const entryName =
-        count === 0 ? document.fileName : prefixName(document.fileName, count);
+        count === 0
+          ? document.fileOriginalName
+          : prefixName(document.fileOriginalName, count);
 
       try {
-        const body = await this.s3.openSenderIdDocument(document.objectKey);
-        archive.append(body, { name: `${document.kind}/${entryName}` });
+        const response = await fetch(document.fileUrl);
+        if (!response.ok || !response.body) {
+          throw new Error(`CDN responded ${response.status}`);
+        }
+        archive.append(Readable.fromWeb(response.body as never), {
+          name: `${document.type}/${entryName}`,
+        });
       } catch (err) {
         this.logger.error(
           `Skipped ${document.id} in zip: ${(err as Error).message}`,
         );
         archive.append(
-          `This document could not be retrieved from storage at ${new Date().toISOString()}.\n`,
-          { name: `${document.kind}/${entryName}.MISSING.txt` },
+          `This document could not be retrieved at ${new Date().toISOString()}.\n`,
+          { name: `${document.type}/${entryName}.MISSING.txt` },
         );
       }
     }
 
     await archive.finalize();
   }
+}
+
+/** Guessed from the file name: the product records no content type. */
+function contentTypeOf(fileName: string): string {
+  const ext = fileName.toLowerCase().split('.').pop();
+  if (ext === 'pdf') return 'application/pdf';
+  if (ext === 'png') return 'image/png';
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  return 'application/octet-stream';
 }
 
 function sanitise(value: string) {

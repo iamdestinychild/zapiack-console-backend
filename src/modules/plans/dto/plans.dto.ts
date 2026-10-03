@@ -46,41 +46,25 @@ export class UpsertPlanDto extends ReasonDto {
 }
 
 /**
- * Customer-facing price per unit. Never edited in place: a change is a new row with
- * a new effective-from date, so last month's profit still reads against last month's price.
+ * Customer-facing price, as the product stores it: credits per destination country,
+ * per product channel. There is no effective-from history on these rows, so a change
+ * replaces the current value rather than superseding it.
  */
 export class UpsertPricingDto extends ReasonDto {
   @IsIn(CHANNELS)
   channel!: string;
 
-  @IsOptional()
-  @IsString()
-  planId?: string;
-
-  /** Set for an enterprise deal; requires effectiveTo so the deal expires. */
-  @IsOptional()
-  @IsString()
-  accountId?: string;
-
-  @IsOptional()
   @IsString()
   @MaxLength(2)
-  country?: string;
+  countryCode!: string;
 
-  @IsOptional()
-  @IsString()
-  @MaxLength(60)
-  network?: string;
-
+  /** Credits charged per send. Decimal string, never a float. */
   @IsNumberString()
-  unitPriceNgn!: string;
-
-  @IsISO8601()
-  effectiveFrom!: string;
+  creditCost!: string;
 
   @IsOptional()
-  @IsISO8601()
-  effectiveTo?: string;
+  @IsBoolean()
+  isActive?: boolean;
 }
 
 /** Provider cost per unit. Lives in the Admin DB, versioned the same way. */

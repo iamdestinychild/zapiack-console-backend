@@ -1,17 +1,26 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '../../generated/admin/client';
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
+import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { lagosDateOnly, resolveRange } from '../../common/time/lagos';
 import { maskIp } from '../../common/http/masking';
 import type { GeoRequestsDto, RequestLogDto } from './dto/geo.dto';
 
 /**
- * Where users sign in from and where API traffic originates. History comes from the
- * rollups; the live map comes from the SSE stream the ingest worker publishes to.
+ * Where users sign in from and where API traffic originates.
+ *
+ * Request geography comes from the product's own `api_activity_logs`, which already
+ * records ip, country, city and region — admin-core does not duplicate that pipeline.
+ * Aggregates read the Admin DB rollups; the raw log is queried directly for detail.
+ *
+ * That table carries no coordinates, so the map plots at city granularity rather than
+ * by latitude and longitude.
  */
 @Injectable()
 export class GeoService {
-  constructor(private readonly admin: AdminPrismaService) {}
+  constructor(
+    private readonly admin: AdminPrismaService,
+    private readonly zapiack: ZapiackPrismaService,
+  ) {}
 
   /** Aggregated API request origins. Reads rollups, not the raw log. */
   async requests(dto: GeoRequestsDto) {
@@ -20,25 +29,15 @@ export class GeoService {
 
     if (groupBy === 'city') {
       // City is not a rollup dimension — the cardinality would be unmanageable — so
-      // this one query goes to the raw log, bounded by the range and a row limit.
-      const rows = await this.admin.$queryRaw<
-        {
-          country: string | null;
-          city: string | null;
-          lat: number | null;
-          lng: number | null;
-          total: bigint;
-        }[]
+      // this reads the product's activity log, bounded by the range and a row limit.
+      const rows = await this.zapiack.read.$queryRaw<
+        { country: string | null; city: string | null; total: bigint }[]
       >`
-        SELECT "country", "city",
-               AVG("latitude")::float  AS lat,
-               AVG("longitude")::float AS lng,
-               COUNT(*)::bigint        AS total
-        FROM "request_logs"
-        WHERE "occurredAt" >= ${start} AND "occurredAt" <= ${end}
+        SELECT "countryCode" AS country, "city", COUNT(*)::bigint AS total
+        FROM "api_activity_logs"
+        WHERE "createdAt" >= ${start} AND "createdAt" <= ${end}
           AND "city" IS NOT NULL
-          ${dto.accountId ? Prisma.sql`AND "accountId" = ${dto.accountId}` : Prisma.empty}
-        GROUP BY "country", "city"
+        GROUP BY "countryCode", "city"
         ORDER BY total DESC
         LIMIT ${dto.limit ?? 100}
       `;
@@ -111,7 +110,7 @@ export class GeoService {
         surface: row.surface,
         count: row._count._all,
       })),
-      recent: recent.map((row) => ({
+      data: recent.map((row) => ({
         occurredAt: row.occurredAt,
         surface: row.surface,
         accountId: row.accountId,
@@ -167,22 +166,49 @@ export class GeoService {
   async requestLog(dto: RequestLogDto, canSeeRawIp: boolean) {
     const { start, end } = resolveRange(dto.from, dto.to, 1);
 
-    const rows = await this.admin.requestLog.findMany({
+    // The log is keyed by API key prefix, so an account filter resolves to its keys.
+    let prefixes: string[] | undefined;
+    if (dto.accountId) {
+      const keys = await this.zapiack.read.apiKeys.findMany({
+        where: { accountId: dto.accountId },
+        select: { keyPrefix: true },
+      });
+      prefixes = keys.map((k) => k.keyPrefix);
+      if (!prefixes.length) {
+        return { range: { from: start, to: end }, data: [] };
+      }
+    }
+
+    const rows = await this.zapiack.read.apiActivityLog.findMany({
       where: {
-        occurredAt: { gte: start, lte: end },
-        ...(dto.accountId ? { accountId: dto.accountId } : {}),
+        createdAt: { gte: start, lte: end },
+        ...(prefixes ? { apiKeyPrefix: { in: prefixes } } : {}),
         ...(dto.endpoint ? { endpoint: { contains: dto.endpoint } } : {}),
-        ...(dto.country ? { country: dto.country } : {}),
+        ...(dto.country ? { countryCode: dto.country } : {}),
         ...(dto.statusCode ? { statusCode: dto.statusCode } : {}),
       },
-      orderBy: { occurredAt: 'desc' },
+      orderBy: { createdAt: 'desc' },
       take: dto.limit ?? 100,
     });
 
     return {
       range: { from: start, to: end },
       data: rows.map((row) => ({
-        ...row,
+        id: row.id,
+        requestId: row.requestId,
+        occurredAt: row.createdAt,
+        endpoint: row.endpoint,
+        method: row.method,
+        statusCode: row.statusCode,
+        status: row.status,
+        service: row.service,
+        projectId: row.projectId,
+        apiKeyPrefix: row.apiKeyPrefix,
+        country: row.countryCode,
+        region: row.region,
+        city: row.city,
+        timezone: row.timezone,
+        message: row.message,
         ip: canSeeRawIp ? row.ip : maskIp(row.ip),
       })),
     };

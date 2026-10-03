@@ -8,7 +8,7 @@ import { DateTime } from 'luxon';
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { AuditService } from '../../common/audit/audit.service';
-import { ApiCoreClient } from '../../integrations/api-core/api-core.client';
+import { ZapiackWriteService } from '../../common/prisma/zapiack-write.service';
 import { NotificationsGateway } from '../inbox/notifications.gateway';
 import type { StaffPrincipal } from '../../common/auth/staff-principal';
 import {
@@ -16,6 +16,7 @@ import {
   REASON_REQUIRED,
   allowedNext,
   assertTransition,
+  type SenderIdStatus,
 } from './sender-id-state';
 import type {
   DecisionDto,
@@ -38,12 +39,17 @@ export class SenderIdsService {
   constructor(
     private readonly admin: AdminPrismaService,
     private readonly zapiack: ZapiackPrismaService,
-    private readonly apiCore: ApiCoreClient,
+    private readonly writer: ZapiackWriteService,
     private readonly audit: AuditService,
     private readonly notifications: NotificationsGateway,
   ) {}
 
-  /** Creates the review shell when a `senderid.submitted` event arrives. */
+  /**
+   * Creates the review shell when a `senderid.submitted` event arrives.
+   *
+   * The product stores `status` as a free string starting at `DRAFT`; the review
+   * record keeps a typed status of its own, so the two are mapped rather than shared.
+   */
   async ensureReview(applicationId: string) {
     const existing = await this.admin.senderIdReview.findUnique({
       where: { applicationId },
@@ -56,14 +62,30 @@ export class SenderIdsService {
     if (!application)
       throw new NotFoundException('Sender ID application not found');
 
+    const status = toReviewStatus(application.status);
+    // A draft has not been filed yet, so there is nothing to review.
+    if (!status) return null;
+
+    // An application filed before its review row existed still carries its filing
+    // date; falling back to createdAt keeps the SLA honest rather than starting now.
+    const submittedAt = application.submittedAt ?? application.createdAt;
+    const decided = [
+      'APPROVED',
+      'REJECTED',
+      'ACTIVE',
+      'OPERATOR_REJECTED',
+    ].includes(status);
+
     const review = await this.admin.senderIdReview.create({
       data: {
         applicationId,
         accountId: application.accountId,
         senderId: application.senderId,
-        status: application.status,
-        submittedAt: application.submittedAt,
-        slaDueAt: DateTime.fromJSDate(application.submittedAt)
+        status,
+        submittedAt,
+        decidedAt: decided ? (application.reviewedAt ?? new Date()) : null,
+        decisionReason: application.rejectionReason,
+        slaDueAt: DateTime.fromJSDate(submittedAt)
           .plus({ hours: SLA_HOURS })
           .toJSDate(),
         checklist: {
@@ -73,10 +95,7 @@ export class SenderIdsService {
           })),
         },
         events: {
-          create: {
-            toStatus: application.status,
-            comment: 'Application received',
-          },
+          create: { toStatus: status, comment: 'Application received' },
         },
       },
     });
@@ -123,7 +142,21 @@ export class SenderIdsService {
     const now = Date.now();
     const page = reviews.slice(0, limit);
 
+    // Queue counts per status, unaffected by the current filter, so the tabs can show
+    // totals while the list shows one of them.
+    const grouped = await this.admin.senderIdReview.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+    });
+    const counts = Object.fromEntries(
+      grouped.map((row) => [row.status, row._count._all]),
+    );
+    counts.OVERDUE = await this.admin.senderIdReview.count({
+      where: { decidedAt: null, slaDueAt: { lt: new Date() } },
+    });
+
     return {
+      counts,
       data: page.map((r) => ({
         id: r.id,
         applicationId: r.applicationId,
@@ -157,7 +190,13 @@ export class SenderIdsService {
 
     const application = await this.zapiack.read.senderIdApplication.findUnique({
       where: { id: review.applicationId },
-      include: { documents: { orderBy: { uploadedAt: 'asc' } }, account: true },
+      include: {
+        documents: { orderBy: { createdAt: 'asc' } },
+        accounts: {
+          include: { owner: { select: { email: true, displayName: true } } },
+        },
+        project: { select: { id: true, name: true, slug: true } },
+      },
     });
 
     const otherApplications = await this.admin.senderIdReview.findMany({
@@ -184,30 +223,33 @@ export class SenderIdsService {
             id: application.id,
             senderId: application.senderId,
             status: application.status,
-            applicantType: application.applicantType,
-            useCase: application.useCase,
-            sampleMessage: application.sampleMessage,
-            submittedAt: application.submittedAt,
+            businessName: application.businessName,
+            cacRegNo: application.cacRegNo,
+            rejectionReason: application.rejectionReason,
+            project: application.project,
+            submittedAt: application.submittedAt ?? application.createdAt,
+            reviewedAt: application.reviewedAt,
           }
         : null,
-      account: application
+      account: application?.accounts
         ? {
-            id: application.account.id,
-            businessName: application.account.businessName,
-            status: application.account.status,
-            kycVerified: application.account.kycVerified,
-            createdAt: application.account.createdAt,
+            id: application.accounts.id,
+            businessName: application.businessName,
+            ownerName: application.accounts.owner.displayName,
+            status: application.accounts.accountStatus,
+            creditBalance: application.accounts.creditBalance,
+            createdAt: application.accounts.createdAt,
           }
         : null,
       // Object keys stay server-side; the browser gets a document id and asks for a URL.
+      // Metadata only. The file URL is fetched per document, which is what records
+      // the access in the audit log.
       documents: (application?.documents ?? []).map((doc) => ({
         id: doc.id,
-        kind: doc.kind,
-        fileName: doc.fileName,
-        contentType: doc.contentType,
-        sizeBytes: doc.sizeBytes,
-        uploadedAt: doc.uploadedAt,
-        uploadedBy: doc.uploadedBy,
+        type: doc.type,
+        fileName: doc.fileOriginalName,
+        provider: doc.provider,
+        uploadedAt: doc.createdAt,
       })),
       checklist: review.checklist,
       history: review.events,
@@ -240,11 +282,10 @@ export class SenderIdsService {
     });
 
     if (before.status === 'SUBMITTED') {
-      await this.apiCore.setSenderIdStatus(
-        before.applicationId,
-        { status: 'IN_REVIEW' },
-        { actorId: actor.id, actorEmail: actor.email },
-      );
+      await this.writer.write.senderIdApplication.update({
+        where: { id: before.applicationId },
+        data: { status: 'IN_REVIEW' },
+      });
     }
 
     await this.audit.record({
@@ -373,13 +414,45 @@ export class SenderIdsService {
       },
     });
 
-    // api-core owns the application record and the customer-facing notification that
-    // goes with a status change.
-    await this.apiCore.setSenderIdStatus(
-      review.applicationId,
-      { status: dto.status, reason: dto.reason },
-      { actorId: actor.id, actorEmail: actor.email },
-    );
+    // The application row and the customer's notification move together: a reviewer
+    // rejecting an application without the applicant hearing why is the failure mode
+    // worth spending a transaction on.
+    await this.writer.write.$transaction(async (tx) => {
+      await tx.senderIdApplication.update({
+        where: { id: review.applicationId },
+        data: {
+          status: dto.status,
+          rejectionReason: REASON_REQUIRED.includes(dto.status)
+            ? (dto.reason ?? null)
+            : null,
+          ...(terminal ? { reviewedAt: new Date() } : {}),
+        },
+      });
+
+      const account = await tx.accounts.findUnique({
+        where: { id: review.accountId },
+        select: { userId: true },
+      });
+      if (account) {
+        await tx.userNotifications.create({
+          data: {
+            userId: account.userId,
+            accountId: review.accountId,
+            type: 'SENDER_ID',
+            severity: NOTIFICATION_SEVERITY[dto.status] ?? 'INFO',
+            title: `Sender ID ${review.senderId}: ${dto.status.toLowerCase().replace(/_/g, ' ')}`,
+            body:
+              dto.reason ??
+              `Your sender ID ${review.senderId} is now ${dto.status.toLowerCase().replace(/_/g, ' ')}.`,
+            actionUrl: '/sender-ids',
+            metadata: {
+              applicationId: review.applicationId,
+              status: dto.status,
+            },
+          },
+        });
+      }
+    });
 
     await this.audit.record({
       actor,
@@ -443,3 +516,38 @@ export class SenderIdsService {
     return overdue.length;
   }
 }
+
+/**
+ * Maps the product's free-text application status onto the review lifecycle.
+ * Returns null for states that are not reviewable yet, and for anything unrecognised
+ * — a new status upstream should not silently become the wrong one here.
+ */
+function toReviewStatus(productStatus: string): SenderIdStatus | null {
+  const normalised = productStatus.trim().toUpperCase();
+  const known: Record<string, SenderIdStatus> = {
+    SUBMITTED: 'SUBMITTED',
+    PENDING: 'SUBMITTED',
+    IN_REVIEW: 'IN_REVIEW',
+    REVIEWING: 'IN_REVIEW',
+    CHANGES_REQUESTED: 'CHANGES_REQUESTED',
+    APPROVED: 'APPROVED',
+    REJECTED: 'REJECTED',
+    SUBMITTED_TO_OPERATORS: 'SUBMITTED_TO_OPERATORS',
+    ACTIVE: 'ACTIVE',
+    OPERATOR_REJECTED: 'OPERATOR_REJECTED',
+    SUSPENDED: 'SUSPENDED',
+  };
+  return known[normalised] ?? null;
+}
+
+/** Maps a review outcome onto the severity the customer's notification bell shows. */
+const NOTIFICATION_SEVERITY: Record<string, string> = {
+  IN_REVIEW: 'PENDING',
+  CHANGES_REQUESTED: 'PENDING',
+  SUBMITTED_TO_OPERATORS: 'PENDING',
+  APPROVED: 'SUCCESS',
+  ACTIVE: 'SUCCESS',
+  REJECTED: 'ERROR',
+  OPERATOR_REJECTED: 'ERROR',
+  SUSPENDED: 'ERROR',
+};

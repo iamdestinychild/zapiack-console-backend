@@ -25,7 +25,11 @@
     "prisma:seed": "prisma db seed --config prisma.admin.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "start:web": "ADMIN_ROLE=web node dist/main",
-    "docker:build": "docker build -t zapiack-admin-core:local ."
+    "docker:build": "docker build -t zapiack-admin-core:local .",
+    "seed:fixtures": "docker exec -i zapiack_admin_postgres psql -U ${DB_USERNAME:-zapiack_admin} -d zapiack -v ON_ERROR_STOP=1 < prisma/fixtures/dev-zapiack.sql",
+    "backfill": "node dist/cli/backfill.js",
+    "dev:reset": "npm run seed:fixtures && npm run build && npm run backfill",
+    "docs:generate": "node dist/cli/capture-examples.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1131.0",
@@ -37,6 +41,7 @@
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/schedule": "^6.1.3",
+    "@nestjs/swagger": "^11.4.7",
     "@nestjs/throttler": "^6.5.0",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",

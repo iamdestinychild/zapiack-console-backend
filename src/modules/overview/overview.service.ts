@@ -28,6 +28,7 @@ export class OverviewService {
       priorUsage,
       cash,
       snapshot,
+      accountTotals,
       requests,
       openFlags,
       senderQueue,
@@ -60,6 +61,13 @@ export class OverviewService {
         where: { date: { lte: lagosDateOnly(end) } },
         orderBy: { date: 'desc' },
       }),
+      // Account counters are period totals; credit liability and MRR above are
+      // point-in-time and correctly read from the latest snapshot instead.
+      this.admin.financeSnapshot.aggregate({
+        where: { date: { gte: lagosDateOnly(start), lte: lagosDateOnly(end) } },
+        _sum: { newAccounts: true, activatedAccounts: true },
+        _max: { activeAccounts: true },
+      }),
       this.admin.requestRollup.aggregate({
         where: { date: { gte: lagosDateOnly(start), lte: lagosDateOnly(end) } },
         _sum: { total: true, serverErrors: true, clientErrors: true },
@@ -71,12 +79,8 @@ export class OverviewService {
       }),
     ]);
 
-    const revenue = D(usage._sum.revenueNgn);
-    const cost = D(usage._sum.costNgn);
-    const fees = D(cash._sum.feesNgn);
-    const priorProfit =
-      D(priorUsage._sum.revenueNgn) - D(priorUsage._sum.costNgn);
-    const profit = revenue - cost - fees;
+    const credits = D(usage._sum.revenueNgn);
+    const priorCredits = D(priorUsage._sum.revenueNgn);
 
     const attempted = Number(usage._sum.attempted ?? 0);
     const succeeded = Number(usage._sum.succeeded ?? 0);
@@ -90,20 +94,23 @@ export class OverviewService {
     return {
       range: { from: start, to: end },
       money: {
-        recognisedRevenueNgn: round(revenue),
-        providerCostNgn: round(cost),
-        paymentFeesNgn: round(fees),
-        grossProfitNgn: round(profit),
-        grossMargin: revenue ? round(profit / revenue, 4) : null,
+        // Credits consumed is the revenue figure this schema supports. Provider cost
+        // and gateway fees are not recorded anywhere, so profit is reported as null
+        // rather than as revenue-minus-zero, which would read as 100% margin.
+        creditsConsumed: round(credits),
         // Direction of travel against the same-length period before this one.
-        profitChangePct: priorProfit
-          ? round(((profit - priorProfit) / Math.abs(priorProfit)) * 100, 1)
+        creditsChangePct: priorCredits
+          ? round(((credits - priorCredits) / Math.abs(priorCredits)) * 100, 1)
           : null,
         cashCollectedNgn: round(
           D(cash._sum.collectedNgn) - D(cash._sum.refundedNgn),
         ),
-        creditLiabilityNgn: round(D(snapshot?.creditLiabilityNgn)),
+        creditLiability: round(D(snapshot?.creditLiabilityNgn)),
         mrrNgn: round(D(snapshot?.mrrNgn)),
+        providerCostNgn: null,
+        paymentFeesNgn: null,
+        grossProfitNgn: null,
+        grossMargin: null,
       },
       traffic: {
         billableEvents: attempted,
@@ -116,9 +123,11 @@ export class OverviewService {
         latencyP95Ms: requests._max.latencyP95Ms,
       },
       accounts: {
-        active: snapshot?.activeAccounts ?? 0,
-        new: snapshot?.newAccounts ?? 0,
-        activated: snapshot?.activatedAccounts ?? 0,
+        // Accounts active on the busiest day of the range, not a sum: an account
+        // active on two days is one account, and the daily rows cannot be added.
+        active: accountTotals._max.activeAccounts ?? 0,
+        new: accountTotals._sum.newAccounts ?? 0,
+        activated: accountTotals._sum.activatedAccounts ?? 0,
       },
       attention: {
         openRiskFlags: openFlags,
@@ -163,16 +172,13 @@ export class OverviewService {
       series: eachLagosDay(start, end).map((date) => {
         const u = usageByDate.get(date.toISOString());
         const r = requestsByDate.get(date.toISOString());
-        const revenue = D(u?._sum.revenueNgn);
-        const cost = D(u?._sum.costNgn);
+        const credits = D(u?._sum.revenueNgn);
         const attempted = Number(u?._sum.attempted ?? 0);
         const total = Number(r?._sum.total ?? 0);
 
         return {
           date,
-          revenueNgn: round(revenue),
-          costNgn: round(cost),
-          profitNgn: round(revenue - cost),
+          creditsConsumed: round(credits),
           billableEvents: attempted,
           successRate: attempted
             ? round(Number(u?._sum.succeeded ?? 0) / attempted, 4)

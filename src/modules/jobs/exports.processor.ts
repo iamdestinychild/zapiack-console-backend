@@ -4,7 +4,7 @@ import type { Job } from 'bullmq';
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { S3Service } from '../../integrations/s3/s3.service';
-import { maskEmail, maskPhone } from '../../common/http/masking';
+import { maskEmail } from '../../common/http/masking';
 import { toDisplayString } from '../../common/http/stringify';
 import { lagosDateOnly, resolveRange } from '../../common/time/lagos';
 import { JOBS, QUEUES, type ExportJobData } from './queues';
@@ -160,35 +160,40 @@ export class ExportsProcessor extends WorkerHost {
           orderBy: { createdAt: 'asc' },
           take: MAX_ROWS,
         });
+        // The credit ledger: charge is in credits, not naira.
         return rows.map((r) => ({
           id: r.id,
           createdAt: r.createdAt.toISOString(),
           accountId: r.accountId,
           type: r.type,
-          amountNgn: r.amountNgn.toString(),
+          status: r.status,
+          channel: r.channel,
+          charge: r.charge.toString(),
           balanceAfter: r.balanceAfter.toString(),
-          reference: r.reference,
-          description: r.description,
+          requestId: r.requestId,
+          refundForId: r.refundForId,
         }));
       }
 
       case 'customers': {
-        const rows = await this.zapiack.read.account.findMany({
+        const rows = await this.zapiack.read.accounts.findMany({
           where: { createdAt: { lte: end } },
           orderBy: { createdAt: 'asc' },
           take: MAX_ROWS,
+          include: { owner: { select: { email: true, displayName: true } } },
         });
         // Even a Finance export keeps contact details masked; a reveal is a separate,
         // separately-audited action.
+        // Even a Finance export keeps contact details masked; a reveal is a
+        // separate, separately-audited action.
         return rows.map((r) => ({
           id: r.id,
-          businessName: r.businessName,
-          email: maskEmail(r.email),
-          phone: maskPhone(r.phone),
-          status: r.status,
-          country: r.country,
-          balanceNgn: r.balance.toString(),
-          kycVerified: r.kycVerified,
+          ownerName: r.owner.displayName,
+          email: maskEmail(r.owner.email),
+          status: r.accountStatus,
+          country: r.countryCode,
+          creditBalance: r.creditBalance.toString(),
+          billingAddress: r.billingAddress,
           createdAt: r.createdAt.toISOString(),
         }));
       }

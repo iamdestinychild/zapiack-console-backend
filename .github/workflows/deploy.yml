@@ -67,6 +67,10 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
       - name: Open an SSH session to the droplet
         uses: webfactory/ssh-agent@v0.9.0
         with:
@@ -76,6 +80,15 @@ jobs:
         run: |
           mkdir -p ~/.ssh
           ssh-keyscan -H "${{ secrets.DROPLET_HOST }}" >> ~/.ssh/known_hosts
+
+      # The compose file lives in the repo, so it has to travel with each deploy;
+      # otherwise a change to it would never reach the droplet. The Caddy snippet is
+      # deliberately NOT copied: the droplet's Caddy is configured by hand.
+      - name: Ship the compose file
+        env:
+          HOST: ${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}
+          APP_DIR: ${{ secrets.DROPLET_PATH }}
+        run: scp docker-compose.prod.yml "$HOST:$APP_DIR/docker-compose.prod.yml"
 
       - name: Pull and restart
         env:

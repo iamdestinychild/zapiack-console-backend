@@ -1,4 +1,3 @@
-import { Type } from 'class-transformer';
 import {
   IsArray,
   IsBoolean,
@@ -11,6 +10,8 @@ import {
   MinLength,
 } from 'class-validator';
 import { RiskFlagType, RiskSeverity } from '../../../generated/admin/client';
+import { AccountStatus } from '../../../generated/zapiack/client';
+import { BooleanQuery } from '../../../common/dto/query-transforms';
 import {
   CursorPageDto,
   DateRangePageDto,
@@ -25,8 +26,8 @@ export class SearchCustomersDto extends CursorPageDto {
   q?: string;
 
   @IsOptional()
-  @IsIn(['ACTIVE', 'SUSPENDED', 'CLOSED'])
-  status?: 'ACTIVE' | 'SUSPENDED' | 'CLOSED';
+  @IsEnum(AccountStatus)
+  status?: AccountStatus;
 
   @IsOptional()
   @IsString()
@@ -37,7 +38,7 @@ export class SearchCustomersDto extends CursorPageDto {
   country?: string;
 
   @IsOptional()
-  @Type(() => Boolean)
+  @BooleanQuery()
   @IsBoolean()
   flaggedOnly?: boolean;
 }
@@ -48,7 +49,33 @@ export class CustomerUsageDto extends DateRangePageDto {
   channel?: string;
 }
 
+/** The ledger tab filters by transaction type. */
+export class LedgerQueryDto extends DateRangePageDto {
+  @IsOptional()
+  @IsIn(['CREDIT', 'DEBIT', 'REFUND'])
+  type?: 'CREDIT' | 'DEBIT' | 'REFUND';
+}
+
 export class SuspendCustomerDto extends ReasonDto {}
+
+/** Any state in the product's account lifecycle. */
+export class SetAccountStatusDto extends ReasonDto {
+  @IsEnum(AccountStatus)
+  status!: AccountStatus;
+}
+
+export class SetApiKeyActiveDto extends ReasonDto {
+  @IsString()
+  apiKeyId!: string;
+
+  @IsBoolean()
+  isActive!: boolean;
+}
+
+export class ArchiveProjectDto extends ReasonDto {
+  @IsString()
+  projectId!: string;
+}
 
 export class ChangePlanDto extends ReasonDto {
   @IsString()

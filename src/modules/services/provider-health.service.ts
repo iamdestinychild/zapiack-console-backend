@@ -15,8 +15,11 @@ const WINDOW_MINUTES = 10;
 const MIN_SAMPLE = 20;
 
 /**
- * Provider health per SMS route, SES, WhatsApp BSP and liveness vendor, derived from
- * delivery receipts and error rates rather than from a status page.
+ * Delivery health per route, derived from failure rates rather than a status page.
+ *
+ * The product records the destination `operator` (MTN, Glo, Airtel, 9mobile) but not
+ * which upstream provider carried the send, so this reports health per operator and
+ * channel. It becomes true provider health when a provider is recorded per send.
  */
 @Injectable()
 export class ProviderHealthService {
@@ -44,13 +47,14 @@ export class ProviderHealthService {
       }[]
     >`
       SELECT
-        "provider",
-        "channel"::text AS channel,
-        COUNT(*)::bigint                                          AS attempted,
-        COUNT(*) FILTER (WHERE "status" = 'delivered')::bigint    AS delivered,
-        COUNT(*) FILTER (WHERE "status" = 'failed')::bigint       AS failed,
-        AVG(EXTRACT(EPOCH FROM ("deliveredAt" - "createdAt")) * 1000)::int AS "avgDlrLatencyMs"
-      FROM "usage_records"
+        COALESCE("operator", 'UNKNOWN')                            AS provider,
+        "channel"::text                                            AS channel,
+        COUNT(*)::bigint                                           AS attempted,
+        COUNT(*) FILTER (WHERE "status" = 'DELIVERED')::bigint      AS delivered,
+        COUNT(*) FILTER (WHERE "status" = 'FAILED')::bigint         AS failed,
+        -- The product records no delivery timestamp, so DLR latency is unavailable.
+        NULL::int                                                  AS "avgDlrLatencyMs"
+      FROM "log_events"
       WHERE "createdAt" >= ${windowStart} AND "createdAt" < ${windowEnd}
       GROUP BY 1, 2
     `;
@@ -144,7 +148,7 @@ export class ProviderHealthService {
       history.set(key, [...(history.get(key) ?? []), sample]);
     }
 
-    return [...latest.entries()].map(([key, sample]) => ({
+    const data = [...latest.entries()].map(([key, sample]) => ({
       provider: sample.provider,
       channel: sample.channel,
       status: sample.status,
@@ -157,5 +161,7 @@ export class ProviderHealthService {
         status: s.status,
       })),
     }));
+
+    return { data, hasMore: false, nextCursor: null };
   }
 }

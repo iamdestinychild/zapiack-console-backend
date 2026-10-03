@@ -217,16 +217,21 @@ export class StaffService {
 
   // ---------------------------------------------------------------- roles
 
-  listRoles() {
-    return this.prisma.role.findMany({
+  async listRoles() {
+    const data = await this.prisma.role.findMany({
       orderBy: { key: 'asc' },
       include: { _count: { select: { staff: true } } },
     });
+    return { data, hasMore: false, nextCursor: null };
   }
 
   /** The catalogue the console renders the permission picker from. */
   permissionCatalogue() {
-    return { permissions: ALL_PERMISSIONS };
+    return {
+      data: ALL_PERMISSIONS.map((key) => ({ key, module: key.split('.')[0] })),
+      hasMore: false,
+      nextCursor: null,
+    };
   }
 
   async upsertRole(actor: StaffPrincipal, dto: UpsertRoleDto) {

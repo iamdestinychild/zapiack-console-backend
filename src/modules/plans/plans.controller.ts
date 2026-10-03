@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
 import {
   CurrentStaff,
   Idempotent,
@@ -6,17 +14,26 @@ import {
 } from '../../common/auth/decorators';
 import type { StaffPrincipal } from '../../common/auth/staff-principal';
 import { PlansService } from './plans.service';
+import { CatalogueService } from './catalogue.service';
+import { ReasonDto } from '../../common/dto/common.dto';
+import {
+  UpsertPlanDto,
+  UpsertProductDto,
+  UpsertProductPricingDto,
+} from './dto/catalogue.dto';
+import { ListProviderCostsDto } from './dto/list-provider-costs.dto';
 import {
   ListPricingDto,
   SetMarginTargetDto,
-  UpsertPlanDto,
-  UpsertPricingDto,
   UpsertProviderCostDto,
 } from './dto/plans.dto';
 
 @Controller()
 export class PlansController {
-  constructor(private readonly plans: PlansService) {}
+  constructor(
+    private readonly plans: PlansService,
+    private readonly catalogue: CatalogueService,
+  ) {}
 
   @Get('plans')
   @RequirePermissions('metrics.read')
@@ -31,7 +48,66 @@ export class PlansController {
     @CurrentStaff() staff: StaffPrincipal,
     @Body() dto: UpsertPlanDto,
   ) {
-    return this.plans.upsertPlan(staff, dto);
+    return this.catalogue.upsertPlan(staff, dto);
+  }
+
+  @Patch('plans/:id')
+  @RequirePermissions('plans.manage')
+  updatePlan(
+    @CurrentStaff() staff: StaffPrincipal,
+    @Param('id') id: string,
+    @Body() dto: UpsertPlanDto,
+  ) {
+    return this.catalogue.upsertPlan(staff, { ...dto, id });
+  }
+
+  @Post('plans/:id/retire')
+  @RequirePermissions('plans.manage')
+  retirePlan(
+    @CurrentStaff() staff: StaffPrincipal,
+    @Param('id') id: string,
+    @Body() dto: ReasonDto,
+  ) {
+    return this.catalogue.setPlanActive(staff, id, false, dto.reason);
+  }
+
+  @Post('plans/:id/activate')
+  @RequirePermissions('plans.manage')
+  activatePlan(
+    @CurrentStaff() staff: StaffPrincipal,
+    @Param('id') id: string,
+    @Body() dto: ReasonDto,
+  ) {
+    return this.catalogue.setPlanActive(staff, id, true, dto.reason);
+  }
+
+  // ---------------------------------------------------------------- products
+
+  @Get('products')
+  @RequirePermissions('metrics.read')
+  listProducts() {
+    return this.catalogue.listProducts();
+  }
+
+  @Post('products')
+  @RequirePermissions('plans.manage')
+  @Idempotent()
+  createProduct(
+    @CurrentStaff() staff: StaffPrincipal,
+    @Body() dto: UpsertProductDto,
+  ) {
+    return this.catalogue.createProduct(staff, dto);
+  }
+
+  /** The channel is immutable; changing it means a different product. */
+  @Patch('products/:id')
+  @RequirePermissions('plans.manage')
+  updateProduct(
+    @CurrentStaff() staff: StaffPrincipal,
+    @Param('id') id: string,
+    @Body() dto: UpsertProductDto,
+  ) {
+    return this.catalogue.updateProduct(staff, id, dto);
   }
 
   @Get('pricing')
@@ -45,21 +121,14 @@ export class PlansController {
   @Idempotent()
   upsertPricing(
     @CurrentStaff() staff: StaffPrincipal,
-    @Body() dto: UpsertPricingDto,
+    @Body() dto: UpsertProductPricingDto,
   ) {
-    return this.plans.upsertPricing(staff, dto);
+    return this.catalogue.upsertPricing(staff, dto);
   }
 
   @Get('provider-costs')
   @RequirePermissions('finance.read')
-  listProviderCosts(
-    @Query()
-    query: {
-      channel?: string;
-      provider?: string;
-      includeHistory?: boolean;
-    },
-  ) {
+  listProviderCosts(@Query() query: ListProviderCostsDto) {
     return this.plans.listProviderCosts(query);
   }
 

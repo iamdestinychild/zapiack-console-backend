@@ -1,11 +1,13 @@
-// Zapiack DB — READ-ONLY MIRROR.
+// Zapiack DB — READ-ONLY MIRROR of the product schema owned by api-core.
 //
-// This schema is not the source of truth and must never be migrated from this repo.
-// It is a hand-maintained subset of the product schema owned by api-core, kept here
-// only to generate a typed read client. The database role behind ZAPIACK_READ_DATABASE_URL
-// has SELECT only, and points at the read replica.
+// This is a transcription of the real product schema. It is not the source of truth
+// and must never be migrated from this repo. The role behind ZAPIACK_READ_DATABASE_URL
+// holds SELECT and nothing else, and points at the read replica.
 //
-// When api-core changes the product schema, mirror the change here and regenerate.
+// When api-core changes the product schema, mirror the change here and regenerate:
+//   npx prisma generate --config prisma.zapiack.config.ts
+//
+// Only the generator and datasource blocks differ from the upstream file.
 
 generator client {
   provider     = "prisma-client"
@@ -17,270 +19,1013 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
-enum ChannelType {
-  SMS
-  EMAIL
-  WHATSAPP
-  VOICE
-  VIDEO
-  IN_APP
-  FACE_LIVENESS
-  MAPPING
-}
 
-enum AccountStatus {
-  ACTIVE
-  SUSPENDED
-  CLOSED
-}
+model Users {
+  id            String  @id @default(uuid())
+  email         String  @unique
+  displayName   String?
+  avatarUrl     String?
+  emailVerified Boolean @default(false)
 
-enum BillingType {
-  PREPAID
-  POSTPAID
-  SUBSCRIPTION
-}
-
-enum TransactionType {
-  CREDIT
-  DEBIT
-  REFUND
-  ADJUSTMENT
-}
-
-enum PaymentStatus {
-  PENDING
-  SUCCESS
-  FAILED
-  REFUNDED
-}
-
-enum SenderIdApplicationStatus {
-  SUBMITTED
-  IN_REVIEW
-  CHANGES_REQUESTED
-  REJECTED
-  APPROVED
-  SUBMITTED_TO_OPERATORS
-  ACTIVE
-  OPERATOR_REJECTED
-  SUSPENDED
-}
-
-model Account {
-  id             String        @id
-  businessName   String?
-  email          String
-  phone          String?
-  status         AccountStatus
-  /// NGN balance. Prepaid credits are a liability until spent.
-  balance        Decimal       @db.Decimal(19, 4)
-  country        String?
-  kycVerified    Boolean       @default(false)
-  kycDetails     Json?
-  createdAt      DateTime
-  updatedAt      DateTime
-
-  users         User[]
-  apiKeys       ApiKey[]
-  subscriptions Subscription[]
-  transactions  TabTransaction[]
-  payments      Payment[]
-  usage         UsageRecord[]
-  senderIds     SenderIdApplication[]
-
-  @@map("accounts")
-}
-
-model User {
-  id         String   @id
-  accountId  String
-  account    Account  @relation(fields: [accountId], references: [id])
-  email      String
-  firstName  String?
-  lastName   String?
-  phone      String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
   lastLoginAt DateTime?
-  createdAt  DateTime
+  countryCode String?
+  timezone    String?
+  city        String?
+  region      String?
+
+  ownedAccount  Accounts?
+  authProviders UserAuthProviders[]
+  memberships   ProjectMembers[]
+  apiKeys       ApiKeys[]
+  onboarding    UserOnboarding?
+  userAnalytics UserAnalytics?
+  notifications UserNotifications[]
 
   @@map("users")
 }
 
-model ApiKey {
-  id        String    @id
-  accountId String
-  account   Account   @relation(fields: [accountId], references: [id])
-  name      String?
-  /// First characters of the key, safe to show; the secret itself is never read by admin-core.
-  prefix    String
-  lastUsedAt DateTime?
-  revokedAt DateTime?
-  createdAt DateTime
+model EmailVerificationTokens {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  token     String
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
 
-  @@index([prefix])
-  @@map("api_keys")
+  @@index([email])
+  @@map("email_verification_tokens")
 }
 
-model Plan {
-  id          String      @id
-  name        String
-  billingType BillingType
-  priceNgn    Decimal     @db.Decimal(19, 4)
-  interval    String?     // month, year
-  features    Json?
-  active      Boolean     @default(true)
-  createdAt   DateTime
+model Otps {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  token     String
+  purpose   String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
 
-  subscriptions Subscription[]
-  pricing       ChannelPricing[]
+  @@index([email, purpose])
+  @@map("otps")
+}
+
+model UserAuthProviders {
+  id             String    @id @default(uuid())
+  userId         String
+  providerType   Providers
+  providerUserId String
+  providerEmail  String
+  createdAt      DateTime  @default(now())
+  user           Users     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, providerType])
+  @@unique([providerType, providerUserId])
+  @@unique([providerType, providerEmail])
+  @@map("user_auth_providers")
+}
+
+enum Providers {
+  GOOGLE
+  GITHUB
+}
+
+model Accounts {
+  id               String        @id @default(uuid())
+  userId           String        @unique
+  accountStatus    AccountStatus @default(ACTIVE)
+  billingAddress   String
+  countryCode      String        @default("NG")
+  currentPeriodEnd DateTime?
+  creditBalance    Decimal       @default(0.00) @db.Decimal(10, 4)
+  welcomeBonusGrantedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner                       Users                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projects                    Projects[]
+  subscriptions               Subscriptions[]
+  apiKeys                     ApiKeys[]
+  reputationLogs              ReputationLogs[]
+  transactions                Transactions[]
+  audiences                   Audiences[]
+  contacts                    Contacts[]
+  campaigns                   Campaigns[]
+  templates                   Templates[]
+  emailEvents                 EmailEvents[]
+  usageBuffers                UsageBuffer[]
+  cards                       Cards[]
+  domains                     Domain[]
+  senderIdApplications        SenderIdApplication[]
+  subscriptionHistories       SubscriptionHistories[]
+  accountBillings             AccountBilling[]
+  tabTransactions             TabTransaction[]
+  logEvents                   LogEvent[]
+  whatsappConnections         WhatsappConnections?
+  whatsappTemplates           WhatsappTemplates[]
+  whatsappConversationWindows WhatsappConversationWindows[]
+
+  @@map("accounts")
+}
+
+model Cards {
+  id                String         @id @default(uuid())
+  accountId         String
+  cardBrand         String
+  cardBin           String
+  cardType          String
+  last4             String
+  expMonth          Int
+  expYear           Int
+  bank              String
+  country           String
+  email             String
+  authorizationCode String
+  isDefault         Boolean        @default(false)
+  createdAt         DateTime       @default(now())
+  account           Accounts       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  transactions      Transactions[]
+
+  @@map("cards")
+}
+
+model Projects {
+  id              String    @id @default(uuid())
+  accountId       String
+  name            String
+  slug            String    @unique
+  avatarUrl       String?
+  emailUsageCount Int       @default(0)
+  apiUsageCount   Int       @default(0)
+  apiKeys         ApiKeys[]
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  projectMembers       ProjectMembers[]
+  projectInvites       ProjectInvites[]
+  isDeleted            Boolean               @default(false)
+  account              Accounts              @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  domains              Domain[]
+  templates            Templates[]
+  senderIdApplications SenderIdApplication[]
+
+  @@map("projects")
+}
+
+model ProjectMembers {
+  id          String       @id @default(uuid())
+  projectId   String
+  displayName String
+  userEmail   String
+  userId      String
+  role        String       @default("MODERATOR")
+  joinedAt    DateTime     @default(now())
+  leftAt      DateTime?
+  status      MemberStatus @default(ACTIVE)
+  project     Projects     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user        Users        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([projectId, userId])
+  @@map("project_members")
+}
+
+enum MemberStatus {
+  ACTIVE
+  SUSPENDED
+  REMOVED
+  LEFT
+}
+
+model ProjectInvites {
+  id        String   @id @default(uuid())
+  projectId String
+  email     String
+  role      String
+  token     String   @unique
+  invitedBy String
+  invitedAt DateTime @default(now())
+  expiresAt DateTime
+  project   Projects @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([email, projectId])
+  @@map("project_invites")
+}
+
+model Plans {
+  id              String   @id @default(uuid())
+  name            String
+  slug            String   @unique
+  description     String?
+  type            String
+  channel         String
+  billingInterval String   @default("MONTHLY")
+  currency        String   @default("NGN")
+  basePrice       Decimal  @db.Decimal(10, 2)
+  overagePrice    Decimal  @db.Decimal(10, 2)
+  overageEnabled  Boolean  @default(true)
+  trialDays       Int      @default(0)
+  isActive        Boolean  @default(true)
+  isPublic        Boolean  @default(true)
+  monthlyQuota    Int
+  dailyQuota      Int?
+  isFree          Boolean  @default(false)
+  maxContacts     Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  subscriptions Subscriptions[]
 
   @@map("plans")
 }
 
-model Subscription {
-  id         String   @id
-  accountId  String
-  account    Account  @relation(fields: [accountId], references: [id])
-  planId     String
-  plan       Plan     @relation(fields: [planId], references: [id])
-  status     String
-  startedAt  DateTime
-  currentPeriodStart DateTime?
-  currentPeriodEnd   DateTime?
-  cancelledAt DateTime?
+model Subscriptions {
+  id                 String    @id @default(uuid())
+  accountId          String
+  planId             String
+  plan               Plans     @relation(fields: [planId], references: [id])
+  type               String
+  channel            String
+  status             String    @default("ACTIVE")
+  currentPeriodStart DateTime  @default(now())
+  currentPeriodEnd   DateTime
+  isTrial            Boolean   @default(false)
+  trialEndsAt        DateTime?
+  cancelledAt        DateTime?
+  pausedAt           DateTime?
+  usageCount         Int       @default(0)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
-  @@index([accountId, status])
+  account               Accounts                @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  subscriptionHistories SubscriptionHistories[]
+  subscriptionEvents    SubscriptionEvents[]
+  transactions          Transactions[]
+
+  @@unique([accountId, planId])
   @@map("subscriptions")
 }
 
-/// Customer-facing price per unit per channel, optionally per country/network.
-model ChannelPricing {
-  id            String      @id
-  channel       ChannelType
-  planId        String?
-  plan          Plan?       @relation(fields: [planId], references: [id])
-  /// Per-account override for enterprise deals; expires at effectiveTo.
-  accountId     String?
-  country       String?
-  network       String?
-  unitPriceNgn  Decimal     @db.Decimal(19, 4)
-  effectiveFrom DateTime
-  effectiveTo   DateTime?
+model SubscriptionEvents {
+  id             String   @id @default(uuid())
+  subscriptionId String
+  event          String
+  payload        Json
+  attempts       Int      @default(0)
+  lastError      String?
+  errorList      String[] @default([])
+  status         String   @default("PENDING")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  @@index([channel, effectiveFrom])
-  @@index([accountId, channel])
-  @@map("channel_pricing")
+  subscription Subscriptions @relation(fields: [subscriptionId], references: [id])
+
+  @@map("subscription_events")
 }
 
-/// Ledger.
-model TabTransaction {
-  id          String          @id
+model UserNotifications {
+  id        String    @id @default(uuid())
+  userId    String
+  accountId String?
+  type      String    @default("NOTICE")
+  severity  String    @default("INFO")
+  title     String
+  body      String
+  actionUrl String?
+  metadata  Json?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user Users @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+  @@map("user_notifications")
+}
+
+model Notifications {
+  id                 String   @id @default(uuid())
+  type               String   @default("GENERAL_NOTIFICATION")
+  payload            Json
+  notificationMedium String[] @default(["EMAIL"])
+  status             String   @default("PENDING")
+  attempts           Int      @default(0)
+  lastError          String?
+  errorList          String[] @default([])
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@map("notifications")
+}
+
+enum AccountStatus {
+  ACTIVE
+  PAST_DUE
+  PROBATION
+  SUSPENDED
+  CANCELED
+  BANNED
+}
+
+model ReputationLogs {
+  id          String   @id @default(uuid())
   accountId   String
-  account     Account         @relation(fields: [accountId], references: [id])
-  type        TransactionType
-  amountNgn   Decimal         @db.Decimal(19, 4)
-  balanceAfter Decimal        @db.Decimal(19, 4)
-  reference   String?
-  description String?
-  metadata    Json?
-  createdAt   DateTime
+  eventType   String
+  delta       Float
+  scoreBefore Float
+  scoreAfter  Float
+  createdAt   DateTime @default(now())
 
-  @@index([accountId, createdAt])
-  @@map("tab_transactions")
-}
+  account Accounts @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
-model Payment {
-  id          String        @id
-  accountId   String
-  account     Account       @relation(fields: [accountId], references: [id])
-  provider    String        @default("paystack")
-  reference   String
-  amountNgn   Decimal       @db.Decimal(19, 4)
-  feeNgn      Decimal       @default(0) @db.Decimal(19, 4)
-  refundedNgn Decimal       @default(0) @db.Decimal(19, 4)
-  status      PaymentStatus
-  paidAt      DateTime?
-  settledAt   DateTime?
-  createdAt   DateTime
-
-  @@index([status, paidAt])
-  @@index([accountId, createdAt])
-  @@map("payments")
-}
-
-/// One row per billable event across every product line.
-/// Provider cost is stored at send time so historical profit never drifts.
-model UsageRecord {
-  id             String      @id
-  accountId      String
-  account        Account     @relation(fields: [accountId], references: [id])
-  channel        ChannelType
-  provider       String?
-  units          Int         @default(1)
-  pricePerUnitNgn Decimal    @db.Decimal(19, 4)
-  totalPriceNgn  Decimal     @db.Decimal(19, 4)
-  providerCostNgn Decimal?   @db.Decimal(19, 4)
-  status         String      // accepted, delivered, failed...
-  failureReason  String?
-  destinationCountry String?
-  destinationNetwork String?
-  latencyMs      Int?
-  /// Channel-specific detail: pages, call seconds, participant minutes, liveness result...
-  attributes     Json?
-  createdAt      DateTime
-  deliveredAt    DateTime?
-
-  @@index([accountId, createdAt])
-  @@index([channel, createdAt])
+  @@index([accountId])
   @@index([createdAt])
-  @@map("usage_records")
+  @@map("reputation_logs")
+}
+
+enum TransactionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REVERSED
+}
+
+model Transactions {
+  id             String            @id @default(uuid())
+  accountId      String
+  subscriptionId String?
+  type           String
+  metadata       Json?
+  amount         Decimal           @db.Decimal(10, 4)
+  currency       String            @default("NGN")
+  status         TransactionStatus @default(PENDING)
+  description    String?
+  reference      String            @unique @default(uuid())
+  createdAt      DateTime          @default(now())
+  creditedAt     DateTime?
+
+  idempotencyKey  String?
+  cardId          String?
+  fxAmount        Decimal? @db.Decimal(20, 4)
+  fxRate          Decimal? @db.Decimal(20, 8)
+  fxCurrency      String?
+  gatewayResponse String?
+  updatedAt       DateTime @updatedAt
+
+  account      Accounts       @relation(fields: [accountId], references: [id])
+  subscription Subscriptions? @relation(fields: [subscriptionId], references: [id])
+  card         Cards?         @relation(fields: [cardId], references: [id])
+
+  @@unique([accountId, idempotencyKey])
+  @@map("transactions")
+}
+
+model SubscriptionHistories {
+  id             String        @id @default(uuid())
+  accountId      String
+  subscriptionId String
+  planName       String
+  amount         Decimal       @db.Decimal(10, 4)
+  currency       String?
+  action         String
+  metadata       Json?
+  changedAt      DateTime      @default(now())
+  subscription   Subscriptions @relation(fields: [subscriptionId], references: [id])
+  account        Accounts      @relation(fields: [accountId], references: [id])
+
+  @@map("subscription_histories")
+}
+
+model ApiKeys {
+  id         String    @id @default(uuid())
+  userId     String
+  accountId  String
+  projectId  String?
+  name       String
+  permission String
+  usageCount Int       @default(0)
+  keyPrefix  String
+  keyHash    String
+  isActive   Boolean   @default(true)
+  isDeleted  Boolean   @default(false)
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  createdAt  DateTime  @default(now())
+  user       Users     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account    Accounts  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  project    Projects? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("api_keys")
+}
+
+model Audiences {
+  id          String             @id @default(uuid())
+  accountId   String
+  name        String
+  description String?
+  createdAt   DateTime           @default(now())
+  account     Accounts           @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  contacts    ContactAudiences[]
+  campaigns   Campaigns[]
+
+  @@map("audiences")
+}
+
+model Contacts {
+  id        String  @id @default(uuid())
+  accountId String?
+  email     String
+  firstName String?
+  lastName  String?
+
+  status ContactStatuses @default(SUBSCRIBED)
+
+  isPublicNetwork Boolean            @default(false)
+  metaData        Json?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  account         Accounts?          @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  audiences       ContactAudiences[]
+  emailEvents     EmailEvents[]
+
+  @@index([accountId, email])
+  @@map("contacts")
+}
+
+enum ContactStatuses {
+  SUBSCRIBED
+  UNSUBSCRIBED
+  BANNED
+  BOUNCED
+  COMPLAINED
+}
+
+model ContactAudiences {
+  contactId  String
+  audienceId String
+  joinedAt   DateTime  @default(now())
+  contact    Contacts  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  audience   Audiences @relation(fields: [audienceId], references: [id], onDelete: Cascade)
+
+  @@id([contactId, audienceId])
+  @@map("contact_audiences")
+}
+
+model Templates {
+  id                 String      @id @default(uuid())
+  templateId         String      @unique
+  accountId          String
+  projectId          String
+  name               String
+  html               String?     @db.Text
+  text               String?     @db.Text
+  subject            String?
+  variables          Json?
+  verificationStatus String      @default("DRAFT")
+  rejectionReason    String?
+  isAiGenerated      Boolean     @default(false)
+  aiPromptUsed       String?     @db.Text
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+  account            Accounts    @relation(fields: [accountId], references: [id])
+  campaigns          Campaigns[]
+  project            Projects    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("templates")
+}
+
+enum VerificationStatuses {
+  DRAFT
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+}
+
+model Campaigns {
+  id        String           @id @default(uuid())
+  accountId String
+  name      String
+  subject   String?
+  status    CampaignStatuses @default(DRAFT)
+
+  templateId        String?
+  audienceId        String?
+  marketplaceFilter Json?
+  scheduledAt       DateTime?
+  sentAt            DateTime?
+  totalRecipients   Int?
+  createdAt         DateTime      @default(now())
+  account           Accounts      @relation(fields: [accountId], references: [id])
+  audience          Audiences?    @relation(fields: [audienceId], references: [id])
+  template          Templates?    @relation(fields: [templateId], references: [id])
+  emailEvents       EmailEvents[]
+
+  @@map("campaigns")
+}
+
+enum CampaignStatuses {
+  DRAFT
+  SCHEDULED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model WebhookEvents {
+  id          String    @id @default(uuid())
+  event       String
+  payload     Json
+  rawBody     String
+  signature   String    @unique
+  ipAddress   String?
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+  attempts    Int       @default(0)
+  lastError   String?
+  status      String    @default("PENDING")
+
+  @@index([signature, status, receivedAt])
+  @@index([processedAt])
+  @@map("webhook_events")
+}
+
+model Domain {
+  id String @id @default(uuid())
+
+  name String @unique
+
+  accountId String
+  account   Accounts @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  projectId String?
+  project   Projects? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  region String @default("eu-west-2")
+
+  dkimPub      String
+  dkimPriv     String
+  dkimSelector String
+  dkimRecord   String
+  dkimStatus   String @default("PENDING")
+
+  mailFromDomain String
+  mailFromStatus String @default("PENDING")
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([accountId])
+  @@index([accountId, projectId])
+  @@map("domains")
+}
+
+enum DomainStatus {
+  PENDING
+  ACTIVE
+  FAILED
+  SUSPENDED
+}
+
+model UserOnboarding {
+  id     String @id @default(uuid())
+  userId String @unique
+  user   Users  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  completed      Boolean   @default(false)
+  completedAt    DateTime?
+  lastActivityAt DateTime  @default(now())
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  stepData Json @default("{}")
+
+  @@map("user_onboarding")
+}
+
+model MailEvent {
+  id           String    @id @default(uuid())
+  accountId    String
+  projectId    String?
+  from         String
+  to           String[]
+  cc           String[]  @default([])
+  bcc          String[]  @default([])
+  replyTo      String?
+  subject      String
+  html         String?
+  text         String?
+  templateId   String?
+  variables    Json?
+  status       String    @default("QUEUED")
+  messageId    String?   @unique
+  errorMessage String?
+  attempts     Int       @default(0)
+  sentAt       DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  emailEvents EmailEvents[]
+
+  @@index([accountId, status])
+  @@index([accountId, projectId])
+  @@index([messageId])
+}
+
+model EmailEvents {
+  id          String     @id @default(uuid())
+  mailEventId String
+  messageId   String?
+  campaignId  String?
+  contactId   String?
+  accountId   String
+  eventType   EventTypes
+  metaData    Json?
+  createdAt   DateTime   @default(now())
+
+  mailEvent MailEvent  @relation(fields: [mailEventId], references: [id])
+  campaign  Campaigns? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact   Contacts?  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  account   Accounts   @relation(fields: [accountId], references: [id])
+
+  @@index([accountId, eventType])
+  @@index([messageId])
+  @@index([mailEventId])
+}
+
+enum EventTypes {
+  QUEUED
+  SENT
+  DELIVERED
+  OPEN
+  CLICK
+  BOUNCE_SOFT
+  BOUNCE_HARD
+  UNSUBSCRIBE
+  COMPLAINT
+  SPAM_REPORT
+}
+
+model UsageBuffer {
+  id           String   @id @default(uuid())
+  accountId    String
+  channel      String
+  dailyCount   Int      @default(0)
+  monthlyCount Int      @default(0)
+  lastSyncedAt DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  account Accounts @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, channel])
+  @@index([accountId])
+  @@map("usage_buffer")
+}
+
+model SnsEvent {
+  id           String    @id @default(uuid())
+  messageId    String    @unique
+  messageType  String
+  sesMessageId String?
+  accountId    String?
+  rawPayload   Json
+  processed    Boolean   @default(false)
+  processedAt  DateTime?
+  errorMessage String?
+  createdAt    DateTime  @default(now())
+
+  @@index([sesMessageId])
+  @@index([processed])
+  @@map("sns_events")
+}
+
+model UserAnalytics {
+  id     String @id @default(uuid())
+  userId String @unique
+  user   Users  @relation(fields: [userId], references: [id])
+
+  buildingFor String[]
+  role        String?
+  roleSkipped Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("user_analytics")
 }
 
 model SenderIdApplication {
-  id          String                    @id
-  accountId   String
-  account     Account                   @relation(fields: [accountId], references: [id])
-  senderId    String
-  status      SenderIdApplicationStatus
-  useCase     String?
-  sampleMessage String?
-  applicantType String?                 // registered_business | individual
-  submittedAt DateTime
-  decidedAt   DateTime?
-  createdAt   DateTime
+  id        String @id @default(uuid())
+  projectId String
+  accountId String
+
+  businessName String
+  cacRegNo     String
+  senderId     String
+
+  status          String  @default("DRAFT")
+  rejectionReason String?
 
   documents SenderIdDocument[]
 
-  @@index([status, submittedAt])
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  submittedAt DateTime?
+  reviewedAt  DateTime?
+  project     Projects  @relation(fields: [projectId], references: [id])
+  accounts    Accounts? @relation(fields: [accountId], references: [id])
+
+  @@unique([projectId, senderId])
   @@map("sender_id_applications")
 }
 
 model SenderIdDocument {
-  id            String              @id
-  applicationId String
-  application   SenderIdApplication @relation(fields: [applicationId], references: [id])
-  kind          String              // cac_certificate, letter_of_authorisation, id_card...
-  fileName      String
-  contentType   String
-  sizeBytes     Int
-  /// Private S3 object key. Never sent to the browser.
-  objectKey     String
-  uploadedBy    String?
-  uploadedAt    DateTime
+  id               String              @id @default(uuid())
+  senderId         String
+  senderIdRef      SenderIdApplication @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  fileOriginalName String
+  fileName         String
+  type             String
+  provider         String?
+  fileUrl          String
 
-  @@index([applicationId])
+  createdAt DateTime @default(now())
+
+  @@unique([senderId, type, provider])
   @@map("sender_id_documents")
 }
 
-/// Customer inbox rows. admin-core reads these; writes go through api-core.
-model Notification {
-  id        String    @id
-  accountId String
-  title     String
-  body      String
-  link      String?
-  readAt    DateTime?
-  createdAt DateTime
+enum BillingType {
+  SUBSCRIPTION
+  CREDIT
+}
 
-  @@index([accountId, createdAt])
-  @@map("notifications")
+enum ChannelType {
+  EMAIL
+  SMS
+}
+
+model AccountBilling {
+  id          String      @id @default(uuid())
+  accountId   String
+  productId   String
+  channel     ChannelType
+  billingType BillingType
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account Accounts @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  product Products @relation(fields: [productId], references: [id])
+
+  @@unique([accountId, channel])
+  @@map("account_billing")
+}
+
+model Products {
+  id           String        @id @default(uuid())
+  name         String
+  channel      ChannelType   @unique
+  description  String?
+  isActive     Boolean       @default(true)
+  billingTypes BillingType[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  accountBillings AccountBilling[]
+  pricing         ProductPricing[]
+
+  @@map("products")
+}
+
+model ProductPricing {
+  id          String  @id @default(uuid())
+  productId   String
+  countryCode String
+  creditCost  Decimal @db.Decimal(10, 4)
+  isActive    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  product Products @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, countryCode])
+  @@map("product_pricing")
+}
+
+enum TabTransactionType {
+  DEBIT
+  REFUND
+  CREDIT
+}
+
+enum TabTransactionStatus {
+  PENDING
+  DELIVERED
+  FAILED
+}
+
+model TabTransaction {
+  id           String               @id @default(uuid())
+  accountId    String
+  channel      ChannelType?
+  type         TabTransactionType
+  status       TabTransactionStatus @default(PENDING)
+  charge       Decimal              @db.Decimal(10, 4)
+  balanceAfter Decimal              @db.Decimal(10, 4)
+  requestId    String
+  refundForId  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account   Accounts         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  refundFor TabTransaction?  @relation("RefundRelation", fields: [refundForId], references: [id])
+  refunds   TabTransaction[] @relation("RefundRelation")
+  logEvents LogEvent[]
+
+  @@index([accountId, channel])
+  @@index([accountId, status])
+  @@index([requestId])
+  @@map("tab_transactions")
+}
+
+enum LogEventChannel {
+  EMAIL
+  SMS
+  WHATSAPP
+  VOICE
+  AUDIO
+}
+
+enum LogEventStatus {
+  PENDING
+  PROCESSING
+  DELIVERED
+  FAILED
+}
+
+model LogEvent {
+  id               String          @id @default(uuid())
+  accountId        String
+  projectId        String?
+  channel          LogEventChannel
+  status           LogEventStatus  @default(PENDING)
+  recipient        String
+  content          String
+  requestId        String
+  tabTransactionId String?
+  metadata         Json?
+  error            String?
+  attempts         Int             @default(0)
+
+  senderId    String?
+  operator    String?
+  countryCode String?
+  cost        Decimal? @db.Decimal(10, 4)
+
+  whatsappMessageId String?
+  templateId        String?
+
+  whatsappTemplate WhatsappTemplates? @relation(fields: [templateId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account        Accounts        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  tabTransaction TabTransaction? @relation(fields: [tabTransactionId], references: [id])
+
+  @@index([whatsappMessageId])
+  @@index([accountId, channel])
+  @@index([accountId, status])
+  @@index([requestId])
+  @@map("log_events")
+}
+
+enum ActivityStatus {
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+}
+
+enum ServiceOrigin {
+  API_SERVICE
+  SMS_SERVICE
+  EMAIL_SERVICE
+}
+
+model ApiActivityLog {
+  id           String         @id @default(uuid())
+  requestId    String         @unique
+  apiKeyPrefix String?
+  projectId    String?
+  ip           String?
+  countryCode  String?
+  city         String?
+  region       String?
+  timezone     String?
+  endpoint     String
+  method       String
+  statusCode   Int
+  status       ActivityStatus @default(PENDING)
+  message      String
+  service      ServiceOrigin
+
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([apiKeyPrefix, createdAt])
+  @@index([status])
+  @@index([endpoint])
+  @@map("api_activity_logs")
+}
+
+model WhatsappConnections {
+  id                 String              @id @default(uuid())
+  accountId          String              @unique
+  wabaId             String
+  phoneNumberId      String
+  displayPhoneNumber String
+  businessName       String?
+  accessToken        String
+  tokenStatus        WhatsappTokenStatus @default(ACTIVE)
+  connectedAt        DateTime            @default(now())
+  revokedAt          DateTime?
+  lastVerifiedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account Accounts @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([wabaId])
+  @@index([phoneNumberId])
+  @@map("whatsapp_connections")
+}
+
+enum WhatsappTokenStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+  ERROR
+}
+
+model WhatsappTemplates {
+  id              String                   @id @default(uuid())
+  accountId       String
+  metaTemplateId  String?
+  name            String
+  category        WhatsappTemplateCategory
+  language        String
+  components      Json
+  status          WhatsappTemplateStatus   @default(DRAFT)
+  rejectionReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account   Accounts   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  logEvents LogEvent[]
+
+  @@unique([accountId, name, language])
+  @@map("whatsapp_templates")
+}
+
+enum WhatsappTemplateCategory {
+  UTILITY
+  MARKETING
+  AUTHENTICATION
+}
+
+enum WhatsappTemplateStatus {
+  DRAFT
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  DISABLED
+}
+
+model WhatsappConversationWindows {
+  id             String   @id @default(uuid())
+  accountId      String
+  contactPhone   String
+  lastInboundAt  DateTime
+  windowClosesAt DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account Accounts @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, contactPhone])
+  @@index([windowClosesAt])
+  @@map("whatsapp_conversation_windows")
 }

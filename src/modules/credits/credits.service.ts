@@ -52,9 +52,9 @@ export class CreditsService {
       throw new BadRequestException('amountNgn must be a positive decimal');
     }
 
-    const account = await this.zapiack.read.account.findUnique({
+    const account = await this.zapiack.read.accounts.findUnique({
       where: { id: accountId },
-      select: { id: true, balance: true, status: true },
+      select: { id: true, creditBalance: true, accountStatus: true },
     });
     if (!account) throw new NotFoundException('Account not found');
 
@@ -90,7 +90,7 @@ export class CreditsService {
       },
       metadata: {
         thresholdNgn: this.threshold,
-        balanceBefore: account.balance.toString(),
+        balanceBefore: account.creditBalance.toString(),
       },
     });
 

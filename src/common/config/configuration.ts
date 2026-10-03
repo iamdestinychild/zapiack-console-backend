@@ -21,6 +21,13 @@ export interface AdminConfig {
     adminUrl: string;
     /** Read replica, SELECT-only role. */
     zapiackReadUrl: string;
+    /**
+     * Primary, through a role granted INSERT/UPDATE on the catalogue, account status
+     * and sender ID tables only. Never on tab_transactions or accounts.creditBalance:
+     * the ledger stays with api-core. Falls back to the read URL when unset, which
+     * makes every write fail loudly rather than silently hitting a replica.
+     */
+    zapiackWriteUrl: string;
     poolMax: number;
   };
 
@@ -124,6 +131,10 @@ export default (): AdminConfig => ({
   database: {
     adminUrl: process.env.ADMIN_DATABASE_URL ?? '',
     zapiackReadUrl: process.env.ZAPIACK_READ_DATABASE_URL ?? '',
+    zapiackWriteUrl:
+      process.env.ZAPIACK_WRITE_DATABASE_URL ??
+      process.env.ZAPIACK_READ_DATABASE_URL ??
+      '',
     poolMax: int(process.env.DB_POOL_MAX, 10),
   },
 
