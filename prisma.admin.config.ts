@@ -13,7 +13,9 @@ export default defineConfig({
     seed: 'node dist/seed.js',
   },
   datasource: {
-    url: process.env.ADMIN_DATABASE_URL,
+    // Migrations take a session-level advisory lock, which a pooled (PgBouncer) endpoint
+    // cannot hold reliably. Set ADMIN_MIGRATION_DATABASE_URL to the direct, non-pooler URL.
+    url: process.env.ADMIN_MIGRATION_DATABASE_URL || process.env.ADMIN_DATABASE_URL,
     // Needed to replay the migrations directory, which is how CI checks that
     // schema.prisma and the migrations have not drifted apart. Optional locally.
     shadowDatabaseUrl: process.env.ADMIN_SHADOW_DATABASE_URL,

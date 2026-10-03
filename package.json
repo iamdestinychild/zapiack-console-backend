@@ -29,7 +29,8 @@
     "seed:fixtures": "docker exec -i zapiack_admin_postgres psql -U ${DB_USERNAME:-zapiack_admin} -d zapiack -v ON_ERROR_STOP=1 < prisma/fixtures/dev-zapiack.sql",
     "backfill": "node dist/cli/backfill.js",
     "dev:reset": "npm run seed:fixtures && npm run build && npm run backfill",
-    "docs:generate": "node dist/cli/capture-examples.js"
+    "docs:generate": "node dist/cli/capture-examples.js",
+    "admin:reset-password": "node dist/cli/reset-password.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1131.0",

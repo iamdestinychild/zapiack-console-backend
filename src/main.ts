@@ -7,6 +7,8 @@ import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { buildOpenApiDocument, mountOpenApi } from './common/openapi';
 import type { AdminConfig } from './common/config/configuration';
+import { installFatalHandlers } from './common/fatal';
+import { installLogRedaction } from './common/log-redaction';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -87,4 +89,8 @@ async function bootstrap() {
   );
 }
 
+// Before anything else loads: libraries print whole error objects, and some of those
+// carry credentials. See log-redaction.ts.
+installLogRedaction();
+installFatalHandlers();
 void bootstrap();
