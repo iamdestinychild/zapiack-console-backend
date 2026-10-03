@@ -142,9 +142,9 @@ export class AuthController {
     return {
       httpOnly: true,
       secure: this.cfg.session.secureCookies,
-      // Strict by default: the console is never embedded. Set ADMIN_COOKIE_SAMESITE=none
-      // only when the console and API are on different sites. CSRF tokens still apply.
-      sameSite: this.cfg.session.sameSite,
+      // The console is a separate subdomain and never embedded, so strict is safe
+      // and removes a whole class of cross-site request.
+      sameSite: 'strict',
       domain: this.cfg.session.cookieDomain,
       path: '/',
       maxAge: maxAgeMs,
