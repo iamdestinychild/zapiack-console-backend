@@ -194,7 +194,7 @@ export class ServicesService {
             const [row] = await this.zapiack.read.$queryRaw<
               { hits: bigint; total: bigint }[]
             >`
-              SELECT COUNT(*) FILTER (WHERE ("metadata" ->> ${attribute})::boolean)::bigint AS hits,
+              SELECT COUNT(*) FILTER (WHERE ("metadata" ->> ${attribute}) = 'true')::bigint AS hits,
                      COUNT(*) FILTER (WHERE jsonb_exists("metadata", ${attribute}))::bigint  AS total
               FROM "log_events"
               WHERE "channel"::text = ${channel}
@@ -219,8 +219,16 @@ export class ServicesService {
           const [row] = await this.zapiack.read.$queryRaw<
             { value: string | null; total: bigint }[]
           >`
+            -- A metric attribute is a number or a flag. Flags sum as 0/1; anything else
+            -- (a category label, a missing value) contributes nothing rather than
+            -- aborting the whole page with a cast error.
             SELECT ${aggregate}(
-                     NULLIF("metadata" ->> ${attribute}, '')::numeric
+                     CASE
+                       WHEN "metadata" ->> ${attribute} IN ('true', 'false')
+                         THEN (("metadata" ->> ${attribute}) = 'true')::int
+                       WHEN "metadata" ->> ${attribute} ~ '^-?[0-9]+(\.[0-9]+)?$'
+                         THEN ("metadata" ->> ${attribute})::numeric
+                     END
                    )::text AS value,
                    COUNT(*) FILTER (WHERE jsonb_exists("metadata", ${attribute}))::bigint AS total
             FROM "log_events"

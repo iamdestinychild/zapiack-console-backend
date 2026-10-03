@@ -48,7 +48,16 @@ migrations create everything, including the audit-log triggers.
 **2. Push both repos to GitHub.** The dashboard is not a git repository yet:
 `git init`, commit, and push it to its own repo.
 
-**3. Create the backend from the Blueprint.** Render dashboard, New, Blueprint, choose
+**3. Create the two database roles on the product DB.** admin-core must not connect with
+the product's owner credentials. Run `prisma/grants/zapiack-roles.sql` once, as the owner,
+after replacing its two placeholder passwords (Neon: SQL Editor). It creates `admin_reader`
+(SELECT on only the columns the console uses) and `admin_writer` (the narrow writes the
+console makes). It withholds `api_keys."keyHash"`, message `content` and `recipient`, and
+the gateway fields on `transactions`, and it gives the writer no access to the credit
+ledger or `accounts."creditBalance"`. Those grants were tested by running the whole API
+under the two roles. Build the two connection strings from them.
+
+**4. Create the backend from the Blueprint.** Render dashboard, New, Blueprint, choose
 `zapiack-console-backend`. Render creates the web service and the Key Value instance and
 prompts for every value marked `sync: false` in `render.yaml`:
 
@@ -62,21 +71,26 @@ prompts for every value marked `sync: false` in `render.yaml`:
 | `ADMIN_CORS_ORIGIN` | the console's exact origin, e.g. `https://console.example.com` |
 | `ADMIN_COOKIE_DOMAIN` | the shared parent domain, e.g. `example.com` |
 
+`.env.render.example` has every value with its format and where it comes from. Neon's
+connection strings include `&channel_binding=require`; drop it, since the Node driver does
+not negotiate channel binding and the connection can be refused. Use the pooled (`-pooler`)
+host. If you ever see prepared-statement errors, switch that one URL to the direct host.
+
 `ADMIN_JWT_SECRET` is generated for you. The product database must accept connections from
 Render: allow its outbound addresses (Render lists them per region) wherever that database
 is firewalled.
 
-**4. Create the console.** New, Blueprint, choose the dashboard repo. Set
+**5. Create the console.** New, Blueprint, choose the dashboard repo. Set
 `VITE_API_BASE_URL` to the API's public URL. It is baked into the bundle at build time, so
 changing it means a rebuild.
 
-**5. Custom domains, on the same parent.** Add `api.example.com` to the web service and
+**6. Custom domains, on the same parent.** Add `api.example.com` to the web service and
 `console.example.com` to the static site, and create the CNAME records Render shows you.
 Hobby workspaces include two custom domains, which is exactly this. **This is not
 optional**: the session cookie is `SameSite=Strict`, so a console on one site and an API on
 another never stays signed in. The `*.onrender.com` addresses will not work with each other.
 
-**6. Seed the first super admin, once.** From Render's Shell tab on the web service:
+**7. Seed the first super admin, once.** From Render's Shell tab on the web service:
 
 ```bash
 ADMIN_SEED_EMAIL=you@example.com ADMIN_SEED_PASSWORD='<a long one>' node dist/seed.js

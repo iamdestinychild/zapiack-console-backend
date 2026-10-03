@@ -143,6 +143,9 @@ export class CustomerActionsService {
     await this.writer.write.apiKeys.update({
       where: { id: apiKeyId },
       data: { isActive },
+      // Prisma returns the whole row from an update unless told otherwise, and the
+      // writer is not granted keyHash. Name the columns; never load the hash.
+      select: { id: true, isActive: true },
     });
 
     await this.audit.record({

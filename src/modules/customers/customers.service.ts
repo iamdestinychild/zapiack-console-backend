@@ -185,6 +185,20 @@ export class CustomersService {
           where: { isDeleted: false },
           orderBy: { createdAt: 'desc' },
           take: 20,
+          // Named, never `true`: the console must not load keyHash, and the read role
+          // is not granted it. See prisma/grants/zapiack-roles.sql.
+          select: {
+            id: true,
+            name: true,
+            keyPrefix: true,
+            permission: true,
+            usageCount: true,
+            isActive: true,
+            projectId: true,
+            lastUsedAt: true,
+            expiresAt: true,
+            createdAt: true,
+          },
         },
         subscriptions: {
           orderBy: { createdAt: 'desc' },
