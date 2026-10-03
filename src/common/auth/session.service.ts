@@ -90,6 +90,25 @@ export class SessionService {
     return record;
   }
 
+  /**
+   * The first of several candidate ids that names a live session. Used when a browser
+   * sends duplicate cookies and only one of them is current.
+   */
+  async firstLive(ids: string[]): Promise<SessionRecord | null> {
+    for (const id of ids) {
+      const record = await this.get(id);
+      if (record) return record;
+    }
+    if (ids.length) {
+      // Never the id itself: just enough to tell, in the logs, that a cookie arrived
+      // and the store had nothing for it.
+      this.logger.warn(
+        `Session lookup missed for ${ids.length} cookie value(s), ids starting ${ids.map((i) => i.slice(0, 4)).join(', ')}`,
+      );
+    }
+    return null;
+  }
+
   /** Slides the idle window. The absolute expiry is never extended. */
   async touch(record: SessionRecord): Promise<void> {
     record.lastSeenAt = Date.now();

@@ -126,11 +126,11 @@ export class AuthService {
 
   /** Step two. On success the session becomes usable and the sign-in is geo-located. */
   async verifyTotp(
-    sessionId: string,
+    sessionIds: string[],
     code: string,
     ctx: LoginContext,
   ): Promise<SessionRecord> {
-    const session = await this.sessions.get(sessionId);
+    const session = await this.sessions.firstLive(sessionIds);
     if (!session)
       throw new UnauthorizedException('Session expired; sign in again');
     if (session.mfaVerified) return session;

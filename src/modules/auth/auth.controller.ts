@@ -11,6 +11,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
 import type { CookieOptions, Request, Response } from 'express';
+import { cookieValues } from '../../common/auth/session-cookie';
 import {
   CurrentStaff,
   Public,
@@ -72,12 +73,10 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const sessionId = (req.cookies as Record<string, string> | undefined)?.[
-      this.cfg.session.accessCookie
-    ];
-    if (!sessionId) throw new UnauthorizedException('Sign in first');
+    const sessionIds = cookieValues(req, this.cfg.session.accessCookie);
+    if (!sessionIds.length) throw new UnauthorizedException('Sign in first');
 
-    const session = await this.auth.verifyTotp(sessionId, dto.code, {
+    const session = await this.auth.verifyTotp(sessionIds, dto.code, {
       ip: req.ip,
       userAgent: req.get('user-agent') ?? undefined,
     });
@@ -169,5 +168,12 @@ export class AuthController {
     const base = { ...this.cookieOptions(0), maxAge: undefined };
     res.clearCookie(this.cfg.session.accessCookie, base);
     res.clearCookie(this.cfg.session.csrfCookie, base);
+    // A cookie set earlier under a different Domain is a different cookie and survives
+    // the clear above, so clear the host-only variant too.
+    if (base.domain) {
+      const hostOnly = { ...base, domain: undefined };
+      res.clearCookie(this.cfg.session.accessCookie, hostOnly);
+      res.clearCookie(this.cfg.session.csrfCookie, hostOnly);
+    }
   }
 }

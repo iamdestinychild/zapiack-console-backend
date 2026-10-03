@@ -6,6 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { cookieValues } from './session-cookie';
 import { Reflector } from '@nestjs/core';
 import { AdminPrismaService } from '../prisma/admin-prisma.service';
 import type { AdminRequest } from '../http/admin-request';
@@ -40,12 +41,10 @@ export class SessionGuard implements CanActivate {
     const request = context.switchToHttp().getRequest<AdminRequest>();
     const cfg = this.config.get('admin', { infer: true });
 
-    const sessionId = (request.cookies as Record<string, string> | undefined)?.[
-      cfg.session.accessCookie
-    ];
-    if (!sessionId) throw new UnauthorizedException('No admin session');
+    const sessionIds = cookieValues(request, cfg.session.accessCookie);
+    if (!sessionIds.length) throw new UnauthorizedException('No admin session');
 
-    const record = await this.sessions.get(sessionId);
+    const record = await this.sessions.firstLive(sessionIds);
     if (!record) throw new UnauthorizedException('Session expired');
     if (!record.mfaVerified)
       throw new UnauthorizedException('Two-factor verification required');
