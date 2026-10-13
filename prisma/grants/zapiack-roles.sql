@@ -68,3 +68,11 @@ GRANT INSERT ON user_notifications TO admin_writer;
 
 -- Note: there is no INSERT or UPDATE on tab_transactions, transactions or
 -- accounts."creditBalance". Credit adjustments go through api-core.
+
+-- ---------------------------------------------------------------- website forms
+-- What visitors typed into the contact, waitlist and newsletter forms on zapiack.com (table form_submissions, added by
+-- zapiack-backend migration 20261013100000_form_submissions). The console lists them and triages them. The writer can
+-- change only the status and the team's note, never the visitor's own words. Every value is written by a stranger, so the
+-- console must show it as text.
+GRANT SELECT ON form_submissions TO admin_reader;
+GRANT UPDATE (status, note, "updatedAt") ON form_submissions TO admin_writer;
