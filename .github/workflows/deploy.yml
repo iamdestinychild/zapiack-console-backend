@@ -26,14 +26,40 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # Until the droplet secrets exist there is nothing to deploy to. Skipping, with a
+  # notice, beats building an image and then failing at the first ssh.
+  gate:
+    name: Deployment configured
+    runs-on: ubuntu-latest
+    # Secrets kept on the environment are only visible to a job that names it.
+    environment: production
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    env:
+      HOST: ${{ secrets.DROPLET_HOST }}
+      KEY: ${{ secrets.DROPLET_SSH_KEY }}
+      DIR: ${{ secrets.DROPLET_PATH }}
+      USER_NAME: ${{ secrets.DROPLET_USER }}
+    steps:
+      - id: check
+        run: |
+          if [ -n "$HOST" ] && [ -n "$KEY" ] && [ -n "$DIR" ] && [ -n "$USER_NAME" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Deploy skipped: set DROPLET_HOST, DROPLET_USER, DROPLET_PATH and DROPLET_SSH_KEY on the 'production' environment."
+          fi
+
   build:
     name: Build and push image
+    needs: gate
     # `event == 'push'` matters: a pull request from a fork whose branch is also called
     # main would otherwise satisfy the branch filter and deploy code nobody reviewed.
     if: >-
-      ${{ github.event_name == 'workflow_dispatch' ||
+      ${{ needs.gate.outputs.ready == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push') }}
+      github.event.workflow_run.event == 'push')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
