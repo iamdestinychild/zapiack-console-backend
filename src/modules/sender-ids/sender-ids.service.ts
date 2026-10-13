@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -9,13 +10,20 @@ import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { AuditService } from '../../common/audit/audit.service';
 import { ZapiackWriteService } from '../../common/prisma/zapiack-write.service';
+import { ProductCacheService } from '../../common/redis/product-cache.service';
 import { NotificationsGateway } from '../inbox/notifications.gateway';
 import type { StaffPrincipal } from '../../common/auth/staff-principal';
 import {
   CHECKLIST,
   REASON_REQUIRED,
-  allowedNext,
-  assertTransition,
+  allowedDecisions,
+  assertDecision,
+  customerNotice,
+  presentStatus,
+  reviewStatusesFor,
+  toReviewStatus,
+  type Decision,
+  type ProductStatus,
   type SenderIdStatus,
 } from './sender-id-state';
 import type {
@@ -42,6 +50,7 @@ export class SenderIdsService {
     private readonly writer: ZapiackWriteService,
     private readonly audit: AuditService,
     private readonly notifications: NotificationsGateway,
+    private readonly productCache: ProductCacheService,
   ) {}
 
   /**
@@ -119,6 +128,9 @@ export class SenderIdsService {
    * The product creates these itself, so the `senderid.submitted` event this queue was
    * built around never arrives. A handful of arrivals still notify reviewers; a large
    * first import is silent apart from one summary, so the bell is not flooded.
+   *
+   * Drafts are skipped on purpose (nothing to review until the customer submits), and
+   * so is any status that is not one of the product's four, which is logged.
    */
   async syncFromProduct() {
     const [applications, reviews] = await Promise.all([
@@ -128,6 +140,7 @@ export class SenderIdsService {
           status: true,
           reviewedAt: true,
           rejectionReason: true,
+          submittedAt: true,
         },
       }),
       this.admin.senderIdReview.findMany({
@@ -143,6 +156,8 @@ export class SenderIdsService {
     const loud = missing.length <= 5;
 
     for (const application of missing) {
+      // Not yet submitted: not in the queue, and not worth a warning.
+      if (application.status.trim().toUpperCase() === 'DRAFT') continue;
       if (!toReviewStatus(application.status)) {
         const key = application.status || '(empty)';
         unmapped[key] = (unmapped[key] ?? 0) + 1;
@@ -166,19 +181,22 @@ export class SenderIdsService {
       });
     }
     if (Object.keys(unmapped).length) {
-      // Visible rather than silent: an application in a status this console does not
-      // know about would otherwise just never appear.
+      // Visible rather than silent: a status outside the product's four would
+      // otherwise just never appear.
       this.logger.warn(
-        `Sender ID applications skipped, unrecognised status: ${JSON.stringify(unmapped)}`,
+        `Sender ID applications skipped, status is not one of the product's four: ${JSON.stringify(unmapped)}`,
       );
     }
     return { created, refreshed, skipped: unmapped };
   }
 
   /**
-   * The product moves applications along by itself (a customer resubmits after changes
-   * were requested, an operator callback marks one active). A review created once and
-   * never revisited would show the status from the day it was imported.
+   * The product moves applications along on its own: a customer edits a rejected
+   * application and submits it again, or another path approves one. A review created
+   * once and never revisited would show the status from the day it was imported.
+   *
+   * Statuses are compared as the product names them, so a reviewer picking an
+   * application up (stored as IN_REVIEW) does not look like a change.
    */
   private async refreshDrifted(
     applications: {
@@ -186,6 +204,7 @@ export class SenderIdsService {
       status: string;
       reviewedAt: Date | null;
       rejectionReason: string | null;
+      submittedAt: Date | null;
     }[],
     reviews: { id: string; applicationId: string; status: SenderIdStatus }[],
   ): Promise<number> {
@@ -194,25 +213,45 @@ export class SenderIdsService {
     for (const review of reviews) {
       const application = byApplication.get(review.applicationId);
       const mapped = application && toReviewStatus(application.status);
-      if (!application || !mapped || mapped === review.status) continue;
+      if (
+        !application ||
+        !mapped ||
+        presentStatus(mapped) === presentStatus(review.status)
+      ) {
+        continue;
+      }
 
-      const decided = [
-        'APPROVED',
-        'REJECTED',
-        'ACTIVE',
-        'OPERATOR_REJECTED',
-      ].includes(mapped);
+      const decided = mapped === 'APPROVED' || mapped === 'REJECTED';
+      // Back to waiting after a decision means the customer resubmitted. It is a new
+      // review: a fresh clock, nobody assigned, and the checklist to do again.
+      const resubmitted = !decided;
+      const submittedAt = application.submittedAt ?? new Date();
+
       await this.admin.senderIdReview.update({
         where: { id: review.id },
         data: {
           status: mapped,
           decidedAt: decided ? (application.reviewedAt ?? new Date()) : null,
-          decisionReason: application.rejectionReason,
+          decisionReason: decided ? application.rejectionReason : null,
+          ...(resubmitted
+            ? {
+                submittedAt,
+                slaDueAt: DateTime.fromJSDate(submittedAt)
+                  .plus({ hours: SLA_HOURS })
+                  .toJSDate(),
+                assigneeId: null,
+                checklist: {
+                  updateMany: { where: {}, data: { passed: null } },
+                },
+              }
+            : {}),
           events: {
             create: {
               fromStatus: review.status,
               toStatus: mapped,
-              comment: 'Status changed in the Zapiack app',
+              comment: resubmitted
+                ? 'Resubmitted by the customer'
+                : 'Status changed in the Zapiack app',
             },
           },
         },
@@ -222,12 +261,20 @@ export class SenderIdsService {
     return refreshed;
   }
 
+  /**
+   * The queue, in the product's own statuses: PENDING_REVIEW, APPROVED, REJECTED, and
+   * DRAFT (customers who have not submitted, which have no review and are read from the
+   * product directly). `counts` has all four plus OVERDUE for the tabs.
+   */
   async list(query: ListSenderIdsDto) {
     const limit = query.limit ?? 50;
+    const wanted = asProductStatus(query.status);
+    if (wanted === 'DRAFT') return this.drafts(query);
+
     const after = decodeCursor(query.cursor);
 
     const filters = {
-      ...(query.status ? { status: query.status } : {}),
+      ...(wanted ? { status: { in: reviewStatusesFor(wanted) } } : {}),
       ...(query.assigneeId ? { assigneeId: query.assigneeId } : {}),
       ...(query.overdueOnly
         ? { slaDueAt: { lt: new Date() }, decidedAt: null }
@@ -273,38 +320,26 @@ export class SenderIdsService {
     const page = reviews.slice(0, limit);
     const last = page[page.length - 1];
 
-    // Queue counts per status, unaffected by the current filter, so the tabs can show
-    // totals while the list shows one of them.
-    const grouped = await this.admin.senderIdReview.groupBy({
-      by: ['status'],
-      _count: { _all: true },
-    });
-    const counts = Object.fromEntries(
-      grouped.map((row) => [row.status, row._count._all]),
-    );
-    counts.OVERDUE = await this.admin.senderIdReview.count({
-      where: { decidedAt: null, slaDueAt: { lt: new Date() } },
-    });
-    // Applications the product holds that are not in the queue (drafts, or a status
-    // this console does not know). Shown so "where is my sender ID" has an answer.
-    counts.UNFILED = (await this.unfiledApplications()).length;
-
     return {
-      counts,
-      data: page.map((r) => ({
-        id: r.id,
-        applicationId: r.applicationId,
-        accountId: r.accountId,
-        senderId: r.senderId,
-        status: r.status,
-        assignee: r.assignee,
-        submittedAt: r.submittedAt,
-        slaDueAt: r.slaDueAt,
-        overdue: !r.decidedAt && r.slaDueAt.getTime() < now,
-        hoursRemaining: r.decidedAt
-          ? null
-          : Math.round((r.slaDueAt.getTime() - now) / 3_600_000),
-      })),
+      counts: await this.queueCounts(),
+      data: page.map((r) => {
+        const status = presentStatus(r.status);
+        const waiting = status === 'PENDING_REVIEW' && !r.decidedAt;
+        return {
+          id: r.id,
+          applicationId: r.applicationId,
+          accountId: r.accountId,
+          senderId: r.senderId,
+          status,
+          assignee: r.assignee,
+          submittedAt: r.submittedAt,
+          slaDueAt: r.slaDueAt,
+          overdue: waiting && r.slaDueAt.getTime() < now,
+          hoursRemaining: waiting
+            ? Math.round((r.slaDueAt.getTime() - now) / 3_600_000)
+            : null,
+        };
+      }),
       hasMore: reviews.length > limit,
       nextCursor:
         reviews.length > limit && last
@@ -313,58 +348,96 @@ export class SenderIdsService {
     };
   }
 
+  /** Per-status totals for the tabs, unaffected by the current filter. */
+  private async queueCounts(): Promise<
+    Record<ProductStatus | 'OVERDUE', number>
+  > {
+    const [grouped, overdue, drafts] = await Promise.all([
+      this.admin.senderIdReview.groupBy({
+        by: ['status'],
+        _count: { _all: true },
+      }),
+      this.admin.senderIdReview.count({
+        where: { decidedAt: null, slaDueAt: { lt: new Date() } },
+      }),
+      this.zapiack.read.senderIdApplication.count({
+        where: { status: 'DRAFT' },
+      }),
+    ]);
+    const counts: Record<ProductStatus | 'OVERDUE', number> = {
+      DRAFT: drafts,
+      PENDING_REVIEW: 0,
+      APPROVED: 0,
+      REJECTED: 0,
+      OVERDUE: overdue,
+    };
+    // Several stored statuses present as one product status; the tabs show the
+    // product's.
+    for (const row of grouped)
+      counts[presentStatus(row.status)] += row._count._all;
+    return counts;
+  }
+
   /**
-   * Applications in the product database that have no review: drafts the customer has
-   * not filed, and any whose status this console does not recognise. Read-only; they
-   * are not reviewable, but they are real and staff should be able to see them.
+   * Applications a customer has started but not submitted. There is no review for a
+   * draft, so this reads the product directly. Read-only: a draft is the customer's to
+   * finish, and there is nothing for a reviewer to decide until they do.
    */
-  private async unfiledApplications() {
+  async drafts(query: { limit?: number; cursor?: string } = {}) {
+    const limit = query.limit ?? 50;
+    const offset = decodeOffset(query.cursor);
+
     const rows = await this.zapiack.read.senderIdApplication.findMany({
+      where: { status: 'DRAFT' },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      skip: offset,
+      take: limit + 1,
       select: {
         id: true,
         accountId: true,
         senderId: true,
         businessName: true,
-        status: true,
+        category: true,
+        companyType: true,
+        cacStatus: true,
         createdAt: true,
         updatedAt: true,
-        submittedAt: true,
       },
-      orderBy: { updatedAt: 'desc' },
     });
-    return rows.filter((row) => !toReviewStatus(row.status));
-  }
+    const page = rows.slice(0, limit);
+    const more = rows.length > limit;
 
-  async unfiled() {
-    const rows = await this.unfiledApplications();
-    const byStatus: Record<string, number> = {};
-    for (const row of rows) {
-      const key = row.status || '(empty)';
-      byStatus[key] = (byStatus[key] ?? 0) + 1;
-    }
     return {
-      byStatus,
-      data: rows.map((row) => ({
+      counts: await this.queueCounts(),
+      data: page.map((row) => ({
+        // A draft has no review, so there is no review id to open.
+        id: null,
         applicationId: row.id,
         accountId: row.accountId,
         senderId: row.senderId,
         businessName: row.businessName,
-        status: row.status,
-        // A draft is the customer's to finish; anything else is a status the console
-        // does not map and needs a developer to look at.
-        reason:
-          row.status.trim().toUpperCase() === 'DRAFT'
-            ? 'Not yet submitted by the customer'
-            : 'Status not recognised by the console',
+        status: 'DRAFT' as const,
+        category: row.category,
+        companyType: row.companyType,
+        cacStatus: row.cacStatus,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
       })),
-      hasMore: false,
-      nextCursor: null,
+      hasMore: more,
+      nextCursor: more ? encodeOffset(offset + limit) : null,
     };
   }
 
-  /** The review screen: application, documents (metadata only), checklist and history. */
+  /** The old name for the drafts list; kept so an existing screen keeps working. */
+  async unfiled() {
+    return this.drafts();
+  }
+
+  /**
+   * The review screen: the application in full (including what CAC said and what the
+   * applicant declared), documents (metadata only), checklist and history. Statuses
+   * are the product's own words throughout.
+   */
   async get(reviewId: string) {
     const review = await this.admin.senderIdReview.findUnique({
       where: { id: reviewId },
@@ -394,17 +467,24 @@ export class SenderIdsService {
       take: 10,
     });
 
+    const status = presentStatus(review.status);
+    const decisions = allowedDecisions(review.status);
+
     return {
       review: {
         id: review.id,
-        status: review.status,
+        status,
         assignee: review.assignee,
+        assigned: Boolean(review.assignee),
         submittedAt: review.submittedAt,
         slaDueAt: review.slaDueAt,
-        overdue: !review.decidedAt && review.slaDueAt < new Date(),
+        overdue: status === 'PENDING_REVIEW' && review.slaDueAt < new Date(),
         decidedAt: review.decidedAt,
         decisionReason: review.decisionReason,
-        allowedNext: allowedNext(review.status),
+        /** Offer exactly these buttons: any of APPROVED and REJECTED. */
+        allowedDecisions: decisions,
+        /** @deprecated The old name for allowedDecisions. */
+        allowedNext: decisions,
       },
       application: application
         ? {
@@ -415,6 +495,27 @@ export class SenderIdsService {
             cacRegNo: application.cacRegNo,
             rejectionReason: application.rejectionReason,
             project: application.project,
+            // What the applicant declared, which the letters to the networks are
+            // written from.
+            category: application.category,
+            companyType: application.companyType,
+            businessActivity: application.businessActivity,
+            applicantName: application.applicantName,
+            designation: application.designation,
+            messageExamples: application.messageExamples,
+            companyAddress: application.companyAddress,
+            incorporatedAt: application.incorporatedAt,
+            // What CAC's registry said. NEEDS_REVIEW means the company was found but
+            // the name or the signatory did not match: a person decides.
+            cac: {
+              status: application.cacStatus,
+              verifiedAt: application.cacVerifiedAt,
+              attempts: application.cacAttempts,
+              failureReason: application.cacFailureReason,
+              data: application.cacData,
+            },
+            attestedAt: application.attestedAt,
+            lettersGeneratedAt: application.lettersGeneratedAt,
             submittedAt: application.submittedAt ?? application.createdAt,
             reviewedAt: application.reviewedAt,
           }
@@ -440,11 +541,24 @@ export class SenderIdsService {
         uploadedAt: doc.createdAt,
       })),
       checklist: review.checklist,
-      history: review.events,
-      otherApplications,
+      history: review.events.map((event) => ({
+        ...event,
+        fromStatus: event.fromStatus ? presentStatus(event.fromStatus) : null,
+        toStatus: presentStatus(event.toStatus),
+      })),
+      otherApplications: otherApplications.map((other) => ({
+        ...other,
+        status: presentStatus(other.status),
+      })),
     };
   }
 
+  /**
+   * Hands a review to a staff member. This is the console's own bookkeeping and changes
+   * nothing in the product: the application stays PENDING_REVIEW. (It used to write
+   * IN_REVIEW there, a status the product does not have, which would have made the
+   * sender ID resolver stop finding the application mid-review.)
+   */
   async assign(actor: StaffPrincipal, reviewId: string, assigneeId?: string) {
     const target = assigneeId ?? actor.id;
     const before = await this.admin.senderIdReview.findUniqueOrThrow({
@@ -455,13 +569,10 @@ export class SenderIdsService {
       where: { id: reviewId },
       data: {
         assigneeId: target,
-        // Picking up an application starts the review, so the status follows.
-        ...(before.status === 'SUBMITTED' ? { status: 'IN_REVIEW' } : {}),
         events: {
           create: {
             fromStatus: before.status,
-            toStatus:
-              before.status === 'SUBMITTED' ? 'IN_REVIEW' : before.status,
+            toStatus: before.status,
             actorId: actor.id,
             comment: `Assigned to ${target === actor.id ? 'self' : target}`,
           },
@@ -469,20 +580,13 @@ export class SenderIdsService {
       },
     });
 
-    if (before.status === 'SUBMITTED') {
-      await this.writer.write.senderIdApplication.update({
-        where: { id: before.applicationId },
-        data: { status: 'IN_REVIEW' },
-      });
-    }
-
     await this.audit.record({
       actor,
       action: 'senderid.assigned',
       targetType: 'sender_id_review',
       targetId: reviewId,
-      before: { assigneeId: before.assigneeId, status: before.status },
-      after: { assigneeId: target, status: review.status },
+      before: { assigneeId: before.assigneeId },
+      after: { assigneeId: target },
     });
 
     if (target !== actor.id) {
@@ -496,7 +600,7 @@ export class SenderIdsService {
 
     return {
       id: review.id,
-      status: review.status,
+      status: presentStatus(review.status),
       assigneeId: review.assigneeId,
     };
   }
@@ -543,9 +647,14 @@ export class SenderIdsService {
   }
 
   /**
-   * Records a decision. The state machine gates which moves are legal; the human
-   * decides which one to make. Approval is refused while the checklist is incomplete,
-   * because an approval is what gets sent on to the operators.
+   * Approves or rejects an application.
+   *
+   * The product is written first and is the source of truth: only APPROVED or REJECTED
+   * ever goes into its `status`, because the customer app, the sender ID resolver and
+   * the letters all branch on the product's four statuses. The customer is told in the
+   * same transaction, then the caches that would keep acting on the old answer for an
+   * hour are cleared and an open dashboard is nudged. The review row follows; if that
+   * last step fails the next sync repairs it from the product.
    */
   async decide(actor: StaffPrincipal, reviewId: string, dto: DecisionDto) {
     const review = await this.admin.senderIdReview.findUnique({
@@ -554,16 +663,24 @@ export class SenderIdsService {
     });
     if (!review) throw new NotFoundException('Review not found');
 
-    const from = review.status;
-    assertTransition(from, dto.status);
+    const decision: Decision =
+      dto.status === 'APPROVED' ? 'APPROVED' : 'REJECTED';
+    // The old "changes requested" is a rejection that tells the customer what to fix.
+    const reason =
+      dto.status === 'CHANGES_REQUESTED' && dto.reason?.trim()
+        ? `Changes requested: ${dto.reason.trim()}`
+        : dto.reason?.trim();
 
-    if (REASON_REQUIRED.includes(dto.status) && !dto.reason?.trim()) {
+    const from = review.status;
+    assertDecision(from, decision);
+
+    if (REASON_REQUIRED.includes(decision) && !reason) {
       throw new BadRequestException(
-        `A written reason is required to record ${dto.status}`,
+        'A written reason is required to reject an application. The customer is shown it.',
       );
     }
 
-    if (dto.status === 'APPROVED') {
+    if (decision === 'APPROVED') {
       const unchecked = review.checklist.filter((item) => item.passed === null);
       if (unchecked.length) {
         throw new BadRequestException(
@@ -573,34 +690,29 @@ export class SenderIdsService {
       const failed = review.checklist.filter((item) => item.passed === false);
       if (failed.length) {
         throw new BadRequestException(
-          `Checklist items failed: ${failed.map((i) => i.key).join(', ')}. Reject or request changes instead.`,
+          `Checklist items failed: ${failed.map((i) => i.key).join(', ')}. Reject the application instead.`,
         );
       }
     }
 
-    const terminal = [
-      'APPROVED',
-      'REJECTED',
-      'ACTIVE',
-      'OPERATOR_REJECTED',
-    ].includes(dto.status);
-
-    const updated = await this.admin.senderIdReview.update({
-      where: { id: reviewId },
-      data: {
-        status: dto.status,
-        decisionReason: dto.reason,
-        ...(terminal ? { decidedAt: new Date() } : {}),
-        events: {
-          create: {
-            fromStatus: from,
-            toStatus: dto.status,
-            actorId: actor.id,
-            comment: dto.reason,
-          },
-        },
-      },
+    const application = await this.zapiack.read.senderIdApplication.findUnique({
+      where: { id: review.applicationId },
+      select: { projectId: true, status: true },
     });
+    if (!application) throw new NotFoundException('Application not found');
+
+    // The customer may have changed it since this screen loaded (withdrawn it to edit,
+    // or submitted a rejected one again). Deciding on a stale view would overwrite
+    // what they just did.
+    const live = toReviewStatus(application.status);
+    if (!live || presentStatus(live) !== presentStatus(from)) {
+      throw new ConflictException(
+        `This application changed in the customer's app and is now ${application.status.toLowerCase().replace('_', ' ')}. Refresh and review it again.`,
+      );
+    }
+
+    const notice = customerNotice(decision, review.senderId, reason);
+    let userId: string | null = null;
 
     // The application row and the customer's notification move together: a reviewer
     // rejecting an application without the applicant hearing why is the failure mode
@@ -609,11 +721,9 @@ export class SenderIdsService {
       await tx.senderIdApplication.update({
         where: { id: review.applicationId },
         data: {
-          status: dto.status,
-          rejectionReason: REASON_REQUIRED.includes(dto.status)
-            ? (dto.reason ?? null)
-            : null,
-          ...(terminal ? { reviewedAt: new Date() } : {}),
+          status: decision,
+          rejectionReason: decision === 'REJECTED' ? (reason ?? null) : null,
+          reviewedAt: new Date(),
         },
       });
 
@@ -622,34 +732,55 @@ export class SenderIdsService {
         select: { userId: true },
       });
       if (account) {
+        userId = account.userId;
         await tx.userNotifications.create({
           data: {
             userId: account.userId,
             accountId: review.accountId,
             type: 'SENDER_ID',
-            severity: NOTIFICATION_SEVERITY[dto.status] ?? 'INFO',
-            title: `Sender ID ${review.senderId}: ${dto.status.toLowerCase().replace(/_/g, ' ')}`,
-            body:
-              dto.reason ??
-              `Your sender ID ${review.senderId} is now ${dto.status.toLowerCase().replace(/_/g, ' ')}.`,
+            severity: notice.severity,
+            title: notice.title,
+            body: notice.body,
             actionUrl: '/sender-ids',
             metadata: {
               applicationId: review.applicationId,
-              status: dto.status,
+              status: decision,
             },
           },
         });
       }
     });
 
+    // The customer app caches which sender ID a project uses for an hour. Without this
+    // an approval would not take effect, and a withdrawn one would keep working.
+    await this.productCache.invalidateSenderId(application.projectId);
+    if (userId) await this.productCache.notifyUser(userId);
+
+    const updated = await this.admin.senderIdReview.update({
+      where: { id: reviewId },
+      data: {
+        status: decision,
+        decisionReason: reason ?? null,
+        decidedAt: new Date(),
+        events: {
+          create: {
+            fromStatus: from,
+            toStatus: decision,
+            actorId: actor.id,
+            comment: reason,
+          },
+        },
+      },
+    });
+
     await this.audit.record({
       actor,
-      action: `senderid.${dto.status.toLowerCase()}`,
+      action: `senderid.${decision.toLowerCase()}`,
       targetType: 'sender_id_application',
       targetId: review.applicationId,
-      reason: dto.reason,
-      before: { status: from },
-      after: { status: dto.status },
+      reason,
+      before: { status: presentStatus(from) },
+      after: { status: decision },
       metadata: {
         reviewId,
         senderId: review.senderId,
@@ -659,7 +790,7 @@ export class SenderIdsService {
 
     return {
       id: updated.id,
-      status: updated.status,
+      status: presentStatus(updated.status),
       decidedAt: updated.decidedAt,
     };
   }
@@ -705,43 +836,7 @@ export class SenderIdsService {
   }
 }
 
-/**
- * Maps the product's free-text application status onto the review lifecycle.
- * Returns null for states that are not reviewable yet, and for anything unrecognised
- * — a new status upstream should not silently become the wrong one here.
- */
-function toReviewStatus(productStatus: string): SenderIdStatus | null {
-  const normalised = productStatus.trim().toUpperCase();
-  const known: Record<string, SenderIdStatus> = {
-    SUBMITTED: 'SUBMITTED',
-    PENDING: 'SUBMITTED',
-    IN_REVIEW: 'IN_REVIEW',
-    REVIEWING: 'IN_REVIEW',
-    UNDER_REVIEW: 'IN_REVIEW',
-    PENDING_REVIEW: 'SUBMITTED',
-    DECLINED: 'REJECTED',
-    CHANGES_REQUESTED: 'CHANGES_REQUESTED',
-    APPROVED: 'APPROVED',
-    REJECTED: 'REJECTED',
-    SUBMITTED_TO_OPERATORS: 'SUBMITTED_TO_OPERATORS',
-    ACTIVE: 'ACTIVE',
-    OPERATOR_REJECTED: 'OPERATOR_REJECTED',
-    SUSPENDED: 'SUSPENDED',
-  };
-  return known[normalised] ?? null;
-}
-
 /** Maps a review outcome onto the severity the customer's notification bell shows. */
-const NOTIFICATION_SEVERITY: Record<string, string> = {
-  IN_REVIEW: 'PENDING',
-  CHANGES_REQUESTED: 'PENDING',
-  SUBMITTED_TO_OPERATORS: 'PENDING',
-  APPROVED: 'SUCCESS',
-  ACTIVE: 'SUCCESS',
-  REJECTED: 'ERROR',
-  OPERATOR_REJECTED: 'ERROR',
-  SUSPENDED: 'ERROR',
-};
 
 function encodeCursor(slaDueAt: Date, id: string): string {
   return Buffer.from(
@@ -761,4 +856,22 @@ function decodeCursor(cursor?: string): { slaDueAt: Date; id: string } | null {
   } catch {
     return null;
   }
+}
+
+/** The filter as a product status; the old SUBMITTED and IN_REVIEW mean PENDING_REVIEW. */
+function asProductStatus(status?: string): ProductStatus | undefined {
+  if (!status) return undefined;
+  return status === 'SUBMITTED' || status === 'IN_REVIEW'
+    ? 'PENDING_REVIEW'
+    : (status as ProductStatus);
+}
+
+function encodeOffset(offset: number): string {
+  return Buffer.from(String(offset)).toString('base64url');
+}
+
+function decodeOffset(cursor?: string): number {
+  if (!cursor) return 0;
+  const n = Number(Buffer.from(cursor, 'base64url').toString('utf8'));
+  return Number.isInteger(n) && n > 0 ? n : 0;
 }

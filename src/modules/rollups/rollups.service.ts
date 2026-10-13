@@ -117,7 +117,10 @@ export class RollupsService {
    * Writes the finalised daily row (hour = -1) for a Lagos day from the raw source,
    * rather than by summing the hourly rows, so a gap in hourly runs self-heals.
    */
-  async finaliseDay(day: Date): Promise<number> {
+  async finaliseDay(
+    day: Date,
+    options: { historical?: boolean } = {},
+  ): Promise<number> {
     const start = DateTime.fromJSDate(day).setZone(LAGOS).startOf('day');
     const end = start.plus({ days: 1 });
     // Every bucket this run writes is stamped with this instant, so anything left
@@ -150,7 +153,7 @@ export class RollupsService {
     await this.rollDestinations(day);
     await this.rollCash(day);
     await this.rollRequests(start.toJSDate(), end.toJSDate());
-    await this.snapshotFinance(day);
+    await this.snapshotFinance(day, options);
 
     this.logger.log(
       `Finalised ${buckets.length} daily usage buckets for ${start.toISODate()}`,
@@ -338,8 +341,19 @@ export class RollupsService {
 
   // ---------------------------------------------------------------- snapshots
 
-  /** End-of-day balances and subscription figures, which are point-in-time by nature. */
-  async snapshotFinance(day: Date): Promise<void> {
+  /**
+   * End-of-day balances and subscription figures, which are point-in-time by nature.
+   *
+   * Credit liability is the sum of balances AS THEY ARE NOW, so for a day already past
+   * it would record today's number against that date and draw a flat, wrong line. A
+   * historical run therefore leaves the liability alone (zero on a new row, untouched
+   * on an existing one): "not known" is honest, a made-up figure is not. Everything
+   * else in the snapshot is derived from rows dated to that day and is correct.
+   */
+  async snapshotFinance(
+    day: Date,
+    options: { historical?: boolean } = {},
+  ): Promise<void> {
     const start = DateTime.fromJSDate(day).setZone(LAGOS).startOf('day');
     const end = start.plus({ days: 1 });
     const date = lagosDateOnly(day);
@@ -402,10 +416,15 @@ export class RollupsService {
       subscriptionRevenueNgn: activity[0]?.subscriptionRevenue ?? '0',
     };
 
+    const { creditLiabilityNgn, ...rest } = data;
     await this.admin.financeSnapshot.upsert({
       where: { date },
-      create: { date, ...data },
-      update: data,
+      create: {
+        date,
+        ...rest,
+        creditLiabilityNgn: options.historical ? '0' : creditLiabilityNgn,
+      },
+      update: options.historical ? rest : data,
     });
   }
 
@@ -522,7 +541,10 @@ export class RollupsService {
       lastError: string | null;
     }[]
   > {
-    const watermarks = await this.admin.rollupWatermark.findMany();
+    // Not `history.backfill`: a one-time marker, whose age says nothing about lag.
+    const watermarks = await this.admin.rollupWatermark.findMany({
+      where: { job: { not: 'history.backfill' } },
+    });
     const now = Date.now();
     return watermarks.map((w) => ({
       job: w.job,

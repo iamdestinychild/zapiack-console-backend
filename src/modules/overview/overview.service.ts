@@ -194,7 +194,11 @@ export class OverviewService {
 
   /** Freshness and queue health, so staff can tell "no data" from "stale data". */
   async health() {
-    const watermarks = await this.admin.rollupWatermark.findMany();
+    // `history.backfill` is a one-time marker, not a job that runs on a schedule, so its
+    // age means nothing here and would read as a stale job.
+    const watermarks = await this.admin.rollupWatermark.findMany({
+      where: { job: { not: 'history.backfill' } },
+    });
     const now = Date.now();
     return {
       at: nowLagos().toISO(),

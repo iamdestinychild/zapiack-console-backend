@@ -18,6 +18,7 @@ export const PERMISSIONS = {
   finance: ['finance.read', 'finance.export'],
   geo: ['geo.view'],
   senderid: ['senderid.review', 'senderid.documents.download'],
+  templates: ['templates.review'],
   notifications: [
     'notifications.send',
     'notifications.broadcast',
@@ -95,6 +96,7 @@ export const SYSTEM_ROLES: Record<
       'customers.suspend',
       'senderid.review',
       'senderid.documents.download',
+      'templates.review',
       'pii.reveal',
       'audit.read',
     ],

@@ -37,3 +37,41 @@ export function missingFinaliseDays(
   }
   return days;
 }
+
+/** How far back a first start loads history. Beyond this, use the backfill CLI. */
+export const MAX_HISTORY_DAYS = 120;
+
+/** Days to leave to the normal catch-up, which owns the most recent ones. */
+const RECENT_DAYS_LEFT_ALONE = 3;
+
+/**
+ * The Africa/Lagos days of history to load, from the first day the product has any
+ * activity up to a few days ago (the nightly catch-up owns the recent ones).
+ *
+ * The normal catch-up deliberately replays only the last two days of a new database,
+ * so on its own a console deployed into a product that has been running for a month
+ * shows one month less than it should. This is the other half: it reads where the
+ * product's history starts and loads from there, capped at MAX_HISTORY_DAYS.
+ *
+ * Returns ISO dates, oldest first; empty when the product has no activity yet.
+ */
+export function historyDays(
+  firstActivity: Date | null,
+  now: DateTime = DateTime.now(),
+): string[] {
+  if (!firstActivity) return [];
+
+  const today = now.setZone(LAGOS).startOf('day');
+  const last = today.minus({ days: RECENT_DAYS_LEFT_ALONE });
+  const earliest = today.minus({ days: MAX_HISTORY_DAYS });
+
+  let cursor = DateTime.fromJSDate(firstActivity).setZone(LAGOS).startOf('day');
+  if (cursor < earliest) cursor = earliest;
+
+  const days: string[] = [];
+  while (cursor <= last) {
+    days.push(cursor.toISODate()!);
+    cursor = cursor.plus({ days: 1 });
+  }
+  return days;
+}

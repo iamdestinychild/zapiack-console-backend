@@ -195,10 +195,25 @@ export class CampaignsService {
     const campaign = await this.admin.campaign.findUniqueOrThrow({
       where: { id: campaignId },
     });
+    // Approval is a second pair of eyes. When the author is the only active super admin
+    // there is no second pair, and refusing would make every large send impossible, so
+    // it is allowed and recorded as self-approved. With anyone else able to approve,
+    // the rule stands.
+    let selfApproved = false;
     if (campaign.createdById === actor.id) {
-      throw new ForbiddenException(
-        'A campaign cannot be approved by the staff member who created it',
-      );
+      const otherApprovers = await this.admin.staff.count({
+        where: {
+          status: 'ACTIVE',
+          id: { not: actor.id },
+          role: { key: 'super_admin' },
+        },
+      });
+      if (otherApprovers > 0) {
+        throw new ForbiddenException(
+          'A campaign cannot be approved by the staff member who created it',
+        );
+      }
+      selfApproved = true;
     }
 
     const updated = await this.admin.campaign.update({
@@ -213,6 +228,7 @@ export class CampaignsService {
       targetId: campaignId,
       reason,
       after: { recipientCount: campaign.recipientCount },
+      metadata: { selfApproved },
     });
 
     await this.notifications.notifyStaff(campaign.createdById, {
@@ -268,6 +284,65 @@ export class CampaignsService {
     });
 
     return { id: updated.id, status: updated.status, scheduledAt };
+  }
+
+  /** Starts a campaign immediately: the same checks as scheduling it for this instant. */
+  async sendNow(actor: StaffPrincipal, campaignId: string) {
+    return this.schedule(actor, campaignId, {
+      scheduledAt: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * Sends again to the recipients that failed, and only them. For a campaign that
+   * finished with failures, or reached nobody, once whatever caused it is fixed.
+   * Recipients already delivered are untouched, and so are accounts created since.
+   */
+  async retry(actor: StaffPrincipal, campaignId: string) {
+    const campaign = await this.admin.campaign.findUniqueOrThrow({
+      where: { id: campaignId },
+    });
+    if (!['SENT', 'FAILED'].includes(campaign.status)) {
+      throw new ConflictException(
+        `Only a finished campaign can be retried; this one is ${campaign.status}`,
+      );
+    }
+    const failed = await this.admin.campaignRecipient.count({
+      where: { campaignId, status: 'FAILED' },
+    });
+    if (!failed) {
+      throw new ConflictException(
+        'No recipient failed, so there is nothing to retry',
+      );
+    }
+
+    await this.admin.campaignRecipient.updateMany({
+      where: { campaignId, status: 'FAILED' },
+      data: { status: 'PENDING', failureReason: null },
+    });
+    await this.admin.campaign.update({
+      where: { id: campaignId },
+      data: { status: 'SCHEDULED', completedAt: null },
+    });
+    await this.queue.add(
+      JOBS.sendCampaign,
+      { campaignId, retry: true },
+      {
+        ...DEFAULT_JOB_OPTIONS,
+        // A fresh id each time: the original job's id is still on file for a day and
+        // BullMQ would silently drop a second job carrying it.
+        jobId: `campaign-${campaignId}-retry-${Date.now()}`,
+      },
+    );
+
+    await this.audit.record({
+      actor,
+      action: 'campaigns.retried',
+      targetType: 'campaign',
+      targetId: campaignId,
+      after: { retrying: failed },
+    });
+    return { id: campaignId, status: 'SCHEDULED', retrying: failed };
   }
 
   async cancel(actor: StaffPrincipal, campaignId: string, reason: string) {
@@ -335,11 +410,7 @@ export class CampaignsService {
         throw new BadRequestException('Campaign has no segment');
       return this.segments.resolveById(campaign.segmentId);
     }
-    return this.segments
-      .resolve({}, undefined)
-      .then((all) =>
-        all.filter((r) => campaign.accountIds.includes(r.accountId)),
-      );
+    return this.segments.resolveAccounts(campaign.accountIds);
   }
 
   /** Substitutes {{variable}} placeholders; an unknown variable renders as empty. */

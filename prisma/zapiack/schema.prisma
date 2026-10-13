@@ -726,8 +726,42 @@ model SenderIdApplication {
   cacRegNo     String
   senderId     String
 
+  /// DRAFT | PENDING_REVIEW | APPROVED | REJECTED. Only these four: the customer app,
+  /// the sender ID resolver and the letters all branch on them, so nothing else may be
+  /// written here. A REJECTED application can be edited and resubmitted.
   status          String  @default("DRAFT")
   rejectionReason String?
+
+  /// TRANSACTIONAL (OTPs, alerts) or PROMOTIONAL. Decides the wording of the
+  /// letters sent to the networks.
+  category         String   @default("TRANSACTIONAL")
+  /// What CAC calls it: COMPANY, BUSINESS_NAME, INCORPORATED_TRUSTEES, ...
+  companyType      String   @default("COMPANY")
+  /// What the business does, in the applicant's words. Optional.
+  businessActivity String?
+  /// The person signing the letters, and the role CAC records for them.
+  applicantName    String?
+  designation      String?
+  /// Sample messages the networks ask to see.
+  messageExamples  String[] @default([])
+
+  /// UNVERIFIED -> VERIFIED (CAC confirmed the company and the signatory) |
+  /// NEEDS_REVIEW (company found, but name or signatory did not match: a person
+  /// decides) | FAILED (no such registration).
+  cacStatus        String    @default("UNVERIFIED")
+  cacVerifiedAt    DateTime?
+  /// Lookups are paid for, so they are counted and capped.
+  cacAttempts      Int       @default(0)
+  cacFailureReason String?
+  /// What the registry said, trimmed to what the letters and a reviewer need.
+  cacData          Json?
+  companyAddress   String?
+  incorporatedAt   DateTime?
+
+  /// The signatory confirmed the details and authorised the letters in their name.
+  attestedAt         DateTime?
+  attestedIp         String?
+  lettersGeneratedAt DateTime?
 
   documents SenderIdDocument[]
 

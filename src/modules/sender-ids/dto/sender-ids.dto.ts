@@ -12,22 +12,27 @@ import {
 import { CursorPageDto } from '../../../common/dto/common.dto';
 import { BooleanQuery } from '../../../common/dto/query-transforms';
 
-const STATUSES = [
+import { PRODUCT_STATUSES } from '../sender-id-state';
+
+/**
+ * The statuses to filter by: the product's four. `SUBMITTED` and `IN_REVIEW` are the
+ * console's old names for PENDING_REVIEW and are still accepted so an existing screen
+ * keeps working; they mean exactly that.
+ */
+const FILTER_STATUSES = [
+  ...PRODUCT_STATUSES,
   'SUBMITTED',
   'IN_REVIEW',
-  'CHANGES_REQUESTED',
-  'REJECTED',
-  'APPROVED',
-  'SUBMITTED_TO_OPERATORS',
-  'ACTIVE',
-  'OPERATOR_REJECTED',
-  'SUSPENDED',
 ] as const;
 
+/** What a reviewer can decide. CHANGES_REQUESTED is the old name for a rejection. */
+const DECISIONS = ['APPROVED', 'REJECTED', 'CHANGES_REQUESTED'] as const;
+
 export class ListSenderIdsDto extends CursorPageDto {
+  /** PENDING_REVIEW, APPROVED, REJECTED, or DRAFT (customers who have not submitted). */
   @IsOptional()
-  @IsIn(STATUSES)
-  status?: (typeof STATUSES)[number];
+  @IsIn(FILTER_STATUSES)
+  status?: (typeof FILTER_STATUSES)[number];
 
   @IsOptional()
   @IsString()
@@ -72,10 +77,16 @@ export class UpdateChecklistDto {
 }
 
 export class DecisionDto {
-  @IsIn(STATUSES)
-  status!: (typeof STATUSES)[number];
+  /**
+   * APPROVED, or REJECTED. Rejecting an approved application withdraws the approval;
+   * approving a rejected one overturns the refusal. `CHANGES_REQUESTED` is accepted as
+   * a rejection: the product has no such status, and a rejected application is already
+   * one the customer can edit and submit again.
+   */
+  @IsIn(DECISIONS)
+  status!: (typeof DECISIONS)[number];
 
-  /** Required for rejection, change requests, suspension and operator rejection. */
+  /** Required to reject: the customer is shown it. Optional when approving. */
   @IsOptional()
   @IsString()
   @MinLength(8)

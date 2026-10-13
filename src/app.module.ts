@@ -30,6 +30,7 @@ import { CreditsModule } from './modules/credits/credits.module';
 import { PlansModule } from './modules/plans/plans.module';
 import { FinanceModule } from './modules/finance/finance.module';
 import { ServicesModule } from './modules/services/services.module';
+import { TemplatesModule } from './modules/templates/templates.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { SenderIdsModule } from './modules/sender-ids/sender-ids.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -89,6 +90,7 @@ import { JobsModule } from './modules/jobs/jobs.module';
     PlansModule,
     FinanceModule,
     ServicesModule,
+    TemplatesModule,
     GeoModule,
     SenderIdsModule,
     NotificationsModule,

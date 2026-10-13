@@ -2,11 +2,14 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import type { Job } from 'bullmq';
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
-import { ApiCoreClient } from '../../integrations/api-core/api-core.client';
 import { MailerService } from '../../integrations/mailer/mailer.service';
 import { SmsCoreClient } from '../../integrations/sms/sms-core.client';
 import { JOBS, QUEUES, type CampaignJobData } from '../jobs/queues';
 import { CampaignsService } from './campaigns.service';
+import {
+  InAppDeliveryService,
+  type InAppRecipient,
+} from './in-app-delivery.service';
 
 const BATCH_SIZE = 200;
 
@@ -21,7 +24,7 @@ export class CampaignProcessor extends WorkerHost {
   constructor(
     private readonly admin: AdminPrismaService,
     private readonly campaigns: CampaignsService,
-    private readonly apiCore: ApiCoreClient,
+    private readonly inApp: InAppDeliveryService,
     private readonly mailer: MailerService,
     private readonly sms: SmsCoreClient,
   ) {
@@ -31,7 +34,7 @@ export class CampaignProcessor extends WorkerHost {
   async process(job: Job): Promise<unknown> {
     if (job.name !== JOBS.sendCampaign) return null;
 
-    const { campaignId } = job.data as CampaignJobData;
+    const { campaignId, retry } = job.data as CampaignJobData;
     const campaign = await this.admin.campaign.findUnique({
       where: { id: campaignId },
     });
@@ -55,7 +58,9 @@ export class CampaignProcessor extends WorkerHost {
       data: { status: 'SENDING', startedAt: new Date() },
     });
 
-    await this.campaigns.materialiseRecipients(campaignId);
+    // A retry re-sends to who failed. Re-resolving the audience would also pick up
+    // accounts created since, who were never part of this campaign.
+    if (!retry) await this.campaigns.materialiseRecipients(campaignId);
 
     // Live contact details are re-read at send time rather than stored on the
     // recipient row, so the campaign table never becomes a copy of the customer list.
@@ -66,9 +71,6 @@ export class CampaignProcessor extends WorkerHost {
       ]),
     );
 
-    let sent = 0;
-    let failed = 0;
-
     for (;;) {
       const batch = await this.admin.campaignRecipient.findMany({
         where: { campaignId, status: 'PENDING' },
@@ -77,31 +79,64 @@ export class CampaignProcessor extends WorkerHost {
       if (!batch.length) break;
 
       if (campaign.channel === 'IN_APP') {
-        // In-app notifications are customer inbox rows, which api-core owns.
-        try {
-          await this.apiCore.createInAppNotifications(
-            {
-              accountIds: batch.map((r) => r.accountId),
-              title: campaign.subject ?? campaign.name,
-              body: campaign.body,
-              campaignId,
+        const idByAccount = new Map(batch.map((r) => [r.accountId, r.id]));
+        const deliverable: InAppRecipient[] = [];
+        const gone: string[] = [];
+
+        for (const r of batch) {
+          const contact = contacts.get(r.accountId);
+          if (!contact) {
+            gone.push(r.id);
+            continue;
+          }
+          const variables = {
+            account: {
+              businessName: contact.businessName ?? '',
+              id: r.accountId,
             },
-            { actorId: campaign.createdById, actorEmail: 'campaign-worker' },
-          );
-          await this.admin.campaignRecipient.updateMany({
-            where: { id: { in: batch.map((r) => r.id) } },
-            data: { status: 'SENT', sentAt: new Date() },
+          };
+          deliverable.push({
+            accountId: r.accountId,
+            userId: contact.userId,
+            title: this.campaigns.render(
+              campaign.subject ?? campaign.name,
+              variables,
+            ),
+            body: this.campaigns.render(campaign.body, variables),
           });
-          sent += batch.length;
-        } catch (err) {
+        }
+
+        if (gone.length) {
           await this.admin.campaignRecipient.updateMany({
-            where: { id: { in: batch.map((r) => r.id) } },
+            where: { id: { in: gone } },
             data: {
               status: 'FAILED',
-              failureReason: (err as Error).message.slice(0, 300),
+              failureReason:
+                'The account no longer exists or no longer matches',
             },
           });
-          failed += batch.length;
+        }
+
+        if (deliverable.length) {
+          const ids = deliverable.map((r) => idByAccount.get(r.accountId)!);
+          try {
+            await this.inApp.deliver({ campaignId, recipients: deliverable });
+            await this.admin.campaignRecipient.updateMany({
+              where: { id: { in: ids } },
+              data: { status: 'SENT', sentAt: new Date() },
+            });
+          } catch (err) {
+            this.logger.error(
+              `Campaign ${campaignId}: in-app batch of ${ids.length} failed: ${(err as Error).message}`,
+            );
+            await this.admin.campaignRecipient.updateMany({
+              where: { id: { in: ids } },
+              data: {
+                status: 'FAILED',
+                failureReason: (err as Error).message.slice(0, 300),
+              },
+            });
+          }
         }
         continue;
       }
@@ -138,7 +173,6 @@ export class CampaignProcessor extends WorkerHost {
             where: { id: recipient.id },
             data: { status: 'SENT', sentAt: new Date() },
           });
-          sent += 1;
         } catch (err) {
           // One bad address must not sink the campaign.
           await this.admin.campaignRecipient.update({
@@ -148,24 +182,35 @@ export class CampaignProcessor extends WorkerHost {
               failureReason: (err as Error).message.slice(0, 300),
             },
           });
-          failed += 1;
         }
       }
     }
 
+    // The recipients are the record. Counting them, not this run's tally, is what keeps
+    // the totals right after a retry, and lets a campaign that reached nobody say so.
+    const [sentTotal, failedTotal] = await Promise.all([
+      this.admin.campaignRecipient.count({
+        where: { campaignId, status: 'SENT' },
+      }),
+      this.admin.campaignRecipient.count({
+        where: { campaignId, status: 'FAILED' },
+      }),
+    ]);
+
     await this.admin.campaign.update({
       where: { id: campaignId },
       data: {
-        status: 'SENT',
+        // Nothing delivered is a failure, however cleanly the worker finished.
+        status: sentTotal === 0 && failedTotal > 0 ? 'FAILED' : 'SENT',
         completedAt: new Date(),
-        sentCount: sent,
-        failedCount: failed,
+        sentCount: sentTotal,
+        failedCount: failedTotal,
       },
     });
 
     this.logger.log(
-      `Campaign ${campaignId} finished: ${sent} sent, ${failed} failed`,
+      `Campaign ${campaignId} finished: ${sentTotal} sent, ${failedTotal} failed`,
     );
-    return { sent, failed };
+    return { sent: sentTotal, failed: failedTotal };
   }
 }

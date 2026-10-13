@@ -30,7 +30,14 @@ export class SenderIdsController {
     return this.senderIds.list(query);
   }
 
-  /** Applications the product holds that are not in the queue: drafts and unknown statuses. */
+  /** Applications customers have started but not submitted. Read-only; nothing to decide yet. */
+  @Get('drafts')
+  @RequirePermissions('senderid.review')
+  drafts(@Query() query: ListSenderIdsDto) {
+    return this.senderIds.drafts(query);
+  }
+
+  /** @deprecated The old name for `drafts`. */
   @Get('unfiled')
   @RequirePermissions('senderid.review')
   unfiled() {

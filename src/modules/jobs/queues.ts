@@ -43,6 +43,12 @@ export const DEFAULT_JOB_OPTIONS = {
 export interface DayJobData {
   /** ISO date (yyyy-mm-dd) of the Africa/Lagos day to process. */
   day: string;
+  /**
+   * A day being loaded long after it happened. It must not stamp today's point-in-time
+   * figures (credit liability) onto a past date, and it also runs the day's
+   * reconciliation, since nothing else will.
+   */
+  historical?: boolean;
 }
 
 export interface WindowJobData {
@@ -55,6 +61,8 @@ export interface EventJobData {
 
 export interface CampaignJobData {
   campaignId: string;
+  /** Re-send to the recipients that failed, without re-resolving the audience. */
+  retry?: boolean;
 }
 
 export interface ExportJobData {

@@ -35,6 +35,12 @@ export interface AdminConfig {
     url: string;
     /** Distinct from the customer app so no key or token can be shared. */
     keyPrefix: string;
+    /**
+     * The Redis database the customer app (api-core) keeps its caches in. admin-core's
+     * own keys are in the database named by REDIS_URL; this one is only ever used to
+     * clear specific cache entries after an action, never to store anything.
+     */
+    productDb: number;
   };
 
   session: {
@@ -80,6 +86,10 @@ export interface AdminConfig {
     serviceToken: string;
     signingSecret: string;
     timeoutMs: number;
+    /** api-core's `/v1` root, for the admin routes (template review). */
+    adminBaseUrl: string;
+    /** The shared key api-core's AdminGuard checks, sent as `x-admin-key`. */
+    adminKey: string;
   };
 
   s3: {
@@ -147,6 +157,7 @@ export default (): AdminConfig => ({
   redis: {
     url: process.env.REDIS_URL ?? 'redis://localhost:6379',
     keyPrefix: process.env.REDIS_KEY_PREFIX ?? 'admin-core:',
+    productDb: int(process.env.PRODUCT_REDIS_DB, 0),
   },
 
   session: {
@@ -212,6 +223,9 @@ export default (): AdminConfig => ({
     serviceToken: process.env.API_CORE_SERVICE_TOKEN ?? '',
     signingSecret: process.env.API_CORE_SIGNING_SECRET ?? '',
     timeoutMs: int(process.env.API_CORE_TIMEOUT_MS, 10_000),
+    adminBaseUrl:
+      process.env.API_CORE_ADMIN_BASE_URL ?? 'http://api-core:3001/v1',
+    adminKey: process.env.API_CORE_ADMIN_KEY ?? '',
   },
 
   s3: {

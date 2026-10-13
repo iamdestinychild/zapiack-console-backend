@@ -1,6 +1,12 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnApplicationBootstrap,
+} from '@nestjs/common';
 import { DateTime } from 'luxon';
 import { Prisma } from '../../generated/admin/client';
+import type { Prisma as ZapiackPrisma } from '../../generated/zapiack/client';
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { AuditService } from '../../common/audit/audit.service';
@@ -13,6 +19,8 @@ import type {
 
 export interface ResolvedRecipient {
   accountId: string;
+  /** The account owner. In-app notifications belong to a user, not an account. */
+  userId: string;
   email: string;
   phone: string | null;
   businessName: string | null;
@@ -23,12 +31,53 @@ export interface ResolvedRecipient {
  * sent tomorrow reaches whoever matches tomorrow.
  */
 @Injectable()
-export class SegmentsService {
+export class SegmentsService implements OnApplicationBootstrap {
+  private readonly logger = new Logger(SegmentsService.name);
+
   constructor(
     private readonly admin: AdminPrismaService,
     private readonly zapiack: ZapiackPrismaService,
     private readonly audit: AuditService,
   ) {}
+
+  /**
+   * Segments every console needs on day one. "Everyone" is a segment with an empty
+   * filter, and having it ready is what makes a send-to-all possible without first
+   * knowing that. Created once and then left alone: staff may rename or edit them.
+   */
+  async onApplicationBootstrap() {
+    const system = [
+      {
+        name: 'All customers',
+        description: 'Every account, whatever its status.',
+        filter: {},
+      },
+      {
+        name: 'Active customers',
+        description: 'Accounts in good standing.',
+        filter: { statuses: ['ACTIVE'] },
+      },
+    ];
+    try {
+      for (const segment of system) {
+        const exists = await this.admin.segment.findUnique({
+          where: { name: segment.name },
+          select: { id: true },
+        });
+        if (exists) continue;
+        await this.admin.segment.create({
+          data: {
+            name: segment.name,
+            description: segment.description,
+            filter: segment.filter,
+          },
+        });
+        this.logger.log(`Created the "${segment.name}" segment`);
+      }
+    } catch (err) {
+      this.logger.error(`System segments skipped: ${(err as Error).message}`);
+    }
+  }
 
   async list() {
     const data = await this.admin.segment.findMany({
@@ -98,15 +147,40 @@ export class SegmentsService {
       // Contact details come from the account owner; the account itself has none.
       select: {
         id: true,
+        userId: true,
         owner: { select: { email: true, displayName: true } },
       },
+      // A stable order, so a paged or resumed send never skips or repeats an account.
+      orderBy: { id: 'asc' },
       ...(limit ? { take: limit } : {}),
     });
     return accounts.map((a) => ({
       accountId: a.id,
+      userId: a.userId,
       email: a.owner.email,
       // The product schema records no phone number, so SMS campaigns cannot be
       // addressed from it. Email and in-app are unaffected.
+      phone: null,
+      businessName: a.owner.displayName,
+    }));
+  }
+
+  /** The named accounts, for a hand-picked campaign. Ids that no longer exist drop out. */
+  async resolveAccounts(accountIds: string[]): Promise<ResolvedRecipient[]> {
+    if (!accountIds.length) return [];
+    const accounts = await this.zapiack.read.accounts.findMany({
+      where: { id: { in: accountIds } },
+      select: {
+        id: true,
+        userId: true,
+        owner: { select: { email: true, displayName: true } },
+      },
+      orderBy: { id: 'asc' },
+    });
+    return accounts.map((a) => ({
+      accountId: a.id,
+      userId: a.userId,
+      email: a.owner.email,
       phone: null,
       businessName: a.owner.displayName,
     }));
@@ -120,35 +194,61 @@ export class SegmentsService {
     return this.resolve(segment.filter as SegmentFilterDto);
   }
 
-  private buildWhere(filter: SegmentFilterDto) {
-    const where: Record<string, unknown> = {};
+  /**
+   * The filter as a read against the product's own columns. Every clause is a real
+   * field of the Zapiack schema; a guessed name does not degrade, it throws, which is
+   * how every filter except "everyone" used to fail.
+   */
+  private buildWhere(
+    filter: SegmentFilterDto,
+  ): ZapiackPrisma.AccountsWhereInput {
+    const clauses: ZapiackPrisma.AccountsWhereInput[] = [];
 
-    if (filter.statuses?.length) where.status = { in: filter.statuses };
-    if (filter.countries?.length) where.country = { in: filter.countries };
-    if (filter.kycVerified !== undefined)
-      where.kycVerified = filter.kycVerified;
-    if (filter.balanceBelowNgn !== undefined)
-      where.balance = { lt: filter.balanceBelowNgn };
+    if (filter.statuses?.length) {
+      clauses.push({
+        accountStatus: { in: filter.statuses as never },
+      });
+    }
+    if (filter.countries?.length) {
+      clauses.push({
+        countryCode: { in: filter.countries.map((c) => c.toUpperCase()) },
+      });
+    }
+
+    // `balanceBelowNgn` is the old name for the same thing: the balance is in credits.
+    const creditsBelow = filter.creditsBelow ?? filter.balanceBelowNgn;
+    if (creditsBelow !== undefined) {
+      clauses.push({ creditBalance: { lt: creditsBelow } });
+    }
+
+    if (filter.emailVerified !== undefined) {
+      clauses.push({ owner: { emailVerified: filter.emailVerified } });
+    }
 
     if (filter.planIds?.length) {
-      where.subscriptions = {
-        some: { planId: { in: filter.planIds }, status: 'active' },
-      };
+      // Subscription status is stored upper-case; matching 'active' matched nobody.
+      clauses.push({
+        subscriptions: {
+          some: { planId: { in: filter.planIds }, status: 'ACTIVE' },
+        },
+      });
     }
 
     if (filter.usedChannel) {
-      where.usage = { some: { channel: filter.usedChannel } };
+      clauses.push({
+        logEvents: { some: { channel: filter.usedChannel as never } },
+      });
     }
 
     if (filter.inactiveForDays !== undefined) {
       const cutoff = DateTime.now()
         .minus({ days: filter.inactiveForDays })
         .toJSDate();
-      // "Inactive for N days" means no usage since the cutoff, which includes accounts
-      // that have never sent anything at all.
-      where.usage = { none: { createdAt: { gte: cutoff } } };
+      // "Inactive for N days" means nothing sent since the cutoff, which includes
+      // accounts that have never sent anything at all.
+      clauses.push({ logEvents: { none: { createdAt: { gte: cutoff } } } });
     }
 
-    return where;
+    return clauses.length ? { AND: clauses } : {};
   }
 }

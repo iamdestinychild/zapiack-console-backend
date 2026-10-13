@@ -77,6 +77,22 @@ export class NotificationsController {
     return this.campaigns.schedule(staff, id, dto);
   }
 
+  /** Send now. Same checks as scheduling: a large audience still needs approval first. */
+  @Post('campaigns/:id/send')
+  @RequirePermissions('notifications.send')
+  @Idempotent()
+  send(@CurrentStaff() staff: StaffPrincipal, @Param('id') id: string) {
+    return this.campaigns.sendNow(staff, id);
+  }
+
+  /** Re-send to the recipients that failed, and only them. */
+  @Post('campaigns/:id/retry')
+  @RequirePermissions('notifications.send')
+  @Idempotent()
+  retry(@CurrentStaff() staff: StaffPrincipal, @Param('id') id: string) {
+    return this.campaigns.retry(staff, id);
+  }
+
   @Post('campaigns/:id/cancel')
   @RequirePermissions('notifications.send')
   cancel(

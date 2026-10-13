@@ -35,13 +35,23 @@ export class RollupsProcessor extends WorkerHost {
       }
 
       case JOBS.finalisePreviousDay: {
-        const { day: isoDay } = job.data as DayJobData;
+        const { day: isoDay, historical } = job.data as DayJobData;
         const day = DateTime.fromISO(isoDay, { zone: LAGOS }).startOf('day');
-        const count = await this.rollups.finaliseDay(day.toJSDate());
-        await this.rollups.markProcessed(
-          'usage.finalise',
-          day.plus({ days: 1 }).toJSDate(),
-        );
+        const count = await this.rollups.finaliseDay(day.toJSDate(), {
+          historical,
+        });
+        // The nightly path reconciles once, for yesterday. A day loaded from history
+        // would never be reconciled otherwise, and it must follow the finalise it
+        // checks, in this same job, or it would compare against a half-written day.
+        if (historical) await this.reconciliation.runForDay(day.toJSDate());
+        // Old days finish in any order and must not drag the "finalised up to" marker
+        // back, or the next start would believe weeks of recent days are still owed.
+        if (!historical) {
+          await this.rollups.markProcessed(
+            'usage.finalise',
+            day.plus({ days: 1 }).toJSDate(),
+          );
+        }
         return { buckets: count };
       }
 

@@ -30,7 +30,8 @@
     "backfill": "node dist/cli/backfill.js",
     "dev:reset": "npm run seed:fixtures && npm run build && npm run backfill",
     "docs:generate": "node dist/cli/capture-examples.js",
-    "admin:reset-password": "node dist/cli/reset-password.js"
+    "admin:reset-password": "node dist/cli/reset-password.js",
+    "dev:fake-templates": "node dev/fake-api-core.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1131.0",

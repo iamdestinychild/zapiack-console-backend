@@ -6,6 +6,7 @@ import {
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { AuditService } from '../../common/audit/audit.service';
+import { ProductCacheService } from '../../common/redis/product-cache.service';
 import { ApiCoreClient } from '../../integrations/api-core/api-core.client';
 import { ZapiackWriteService } from '../../common/prisma/zapiack-write.service';
 import { AccountStatus } from '../../generated/zapiack/client';
@@ -24,6 +25,7 @@ export class CustomerActionsService {
     private readonly zapiack: ZapiackPrismaService,
     private readonly admin: AdminPrismaService,
     private readonly audit: AuditService,
+    private readonly productCache: ProductCacheService,
   ) {}
 
   private ctx(actor: StaffPrincipal, idempotencyKey?: string) {
@@ -76,6 +78,12 @@ export class CustomerActionsService {
       select: { id: true, accountStatus: true },
     });
 
+    // The customer app caches an account's status for an hour. Without clearing it a
+    // suspended account keeps sending, and a reactivated one stays blocked, until it
+    // expires on its own.
+    const effective =
+      await this.productCache.invalidateAccountStatus(accountId);
+
     await this.audit.record({
       actor,
       action: `customers.status_${status.toLowerCase()}`,
@@ -84,9 +92,12 @@ export class CustomerActionsService {
       reason,
       before: { status: before.accountStatus },
       after: { status: updated.accountStatus },
+      metadata: { immediate: effective },
     });
 
-    return { accountId, status: updated.accountStatus };
+    // `immediate` is false only if the cache could not be cleared, in which case the
+    // change still lands, within the hour. Say so rather than promise more.
+    return { accountId, status: updated.accountStatus, immediate: effective };
   }
 
   suspend(actor: StaffPrincipal, accountId: string, reason: string) {
@@ -148,6 +159,12 @@ export class CustomerActionsService {
       select: { id: true, isActive: true },
     });
 
+    // api-core caches a key's details for an hour. A key disabled without clearing that
+    // would keep working, which defeats the point of disabling a leaked one.
+    const effective = await this.productCache.invalidateApiKey(
+      apiKey.keyPrefix,
+    );
+
     await this.audit.record({
       actor,
       action: isActive ? 'customers.restore_key' : 'customers.revoke_key',
@@ -156,10 +173,10 @@ export class CustomerActionsService {
       reason,
       before: { isActive: apiKey.isActive },
       after: { isActive },
-      metadata: { accountId, prefix: apiKey.keyPrefix },
+      metadata: { accountId, prefix: apiKey.keyPrefix, immediate: effective },
     });
 
-    return { accountId, apiKeyId, isActive };
+    return { accountId, apiKeyId, isActive, immediate: effective };
   }
 
   /** Soft delete: a project carries history a hard delete would take with it. */

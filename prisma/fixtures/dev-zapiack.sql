@@ -11,6 +11,27 @@
 
 BEGIN;
 
+-- The product's sender ID application has grown columns since this fixture was first
+-- written (CAC verification, the letters, the signatory). Added here, only if missing,
+-- so a local database created earlier still loads.
+ALTER TABLE sender_id_applications
+  ADD COLUMN IF NOT EXISTS category           text        NOT NULL DEFAULT 'TRANSACTIONAL',
+  ADD COLUMN IF NOT EXISTS "companyType"      text        NOT NULL DEFAULT 'COMPANY',
+  ADD COLUMN IF NOT EXISTS "businessActivity" text,
+  ADD COLUMN IF NOT EXISTS "applicantName"    text,
+  ADD COLUMN IF NOT EXISTS designation        text,
+  ADD COLUMN IF NOT EXISTS "messageExamples"  text[]      NOT NULL DEFAULT ARRAY[]::text[],
+  ADD COLUMN IF NOT EXISTS "cacStatus"        text        NOT NULL DEFAULT 'UNVERIFIED',
+  ADD COLUMN IF NOT EXISTS "cacVerifiedAt"    timestamp(3),
+  ADD COLUMN IF NOT EXISTS "cacAttempts"      integer     NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS "cacFailureReason" text,
+  ADD COLUMN IF NOT EXISTS "cacData"          jsonb,
+  ADD COLUMN IF NOT EXISTS "companyAddress"   text,
+  ADD COLUMN IF NOT EXISTS "incorporatedAt"   timestamp(3),
+  ADD COLUMN IF NOT EXISTS "attestedAt"       timestamp(3),
+  ADD COLUMN IF NOT EXISTS "attestedIp"       text,
+  ADD COLUMN IF NOT EXISTS "lettersGeneratedAt" timestamp(3);
+
 TRUNCATE sender_id_documents, sender_id_applications, log_events, tab_transactions,
          transactions, api_activity_logs, subscriptions, product_pricing,
          account_billing, products, api_keys, project_members, projects,
@@ -189,13 +210,14 @@ SELECT 'act_'||g,
 FROM generate_series(1, 3000) g;
 
 -- ---------------------------------------------------------------- sender IDs
-INSERT INTO sender_id_applications (id,"projectId","accountId","businessName","cacRegNo","senderId",status,"rejectionReason","createdAt","updatedAt","submittedAt","reviewedAt") VALUES
- ('app_kano','prj_kano','acc_kano','Kano Logistics Limited','RC1044821','KANOLOG','SUBMITTED',NULL, now() - interval '30 hours', now(), now() - interval '30 hours', NULL),
- ('app_lekki','prj_lekki','acc_lekki','Lekki Fintech Limited','RC2280913','LEKKIPAY','SUBMITTED',NULL, now() - interval '5 hours', now(), now() - interval '5 hours', NULL),
- ('app_abuja','prj_abuja','acc_abuja','Abuja Health Group Ltd','RC1877340','ABJHEALTH','IN_REVIEW',NULL, now() - interval '2 days', now(), now() - interval '2 days', NULL),
- ('app_verde','prj_verde','acc_verde','Verde Retail Africa','RC3390011','VERDE','ACTIVE',NULL, now() - interval '40 days', now(), now() - interval '40 days', now() - interval '38 days'),
- ('app_swift','prj_swift','acc_swift','SwiftPay NG','RC4410222','SWIFTPAY','REJECTED','Sample content reads as an unsolicited promotion.', now() - interval '12 days', now(), now() - interval '12 days', now() - interval '10 days'),
- ('app_draft','prj_kano_ops','acc_kano','Kano Logistics Limited','RC1044821','KANOOPS','DRAFT',NULL, now() - interval '1 day', now(), NULL, NULL);
+-- The product's four statuses, and nothing else: DRAFT, PENDING_REVIEW, APPROVED, REJECTED.
+INSERT INTO sender_id_applications (id,"projectId","accountId","businessName","cacRegNo","senderId",status,"rejectionReason",category,"companyType","businessActivity","applicantName",designation,"messageExamples","cacStatus","cacVerifiedAt","cacAttempts","cacFailureReason","companyAddress","incorporatedAt","attestedAt","lettersGeneratedAt","createdAt","updatedAt","submittedAt","reviewedAt") VALUES
+ ('app_kano','prj_kano','acc_kano','Kano Logistics Limited','RC1044821','KANOLOG','PENDING_REVIEW',NULL,'TRANSACTIONAL','COMPANY','Freight and last-mile delivery','Adeola Okafor','Director',ARRAY['Your parcel KL-2281 is out for delivery.','Delivery code: 4471'],'VERIFIED', now() - interval '30 hours',1,NULL,'12 Murtala Way, Kano', now() - interval '9 years', now() - interval '31 hours', now() - interval '31 hours', now() - interval '30 hours', now(), now() - interval '30 hours', NULL),
+ ('app_lekki','prj_lekki','acc_lekki','Lekki Fintech Limited','RC2280913','LEKKIPAY','PENDING_REVIEW',NULL,'PROMOTIONAL','COMPANY','Payments for small businesses','Tunde Bakare','Managing Director',ARRAY['Get 10% off your next transfer this weekend.'],'NEEDS_REVIEW', NULL,2,'Company found, but the signatory name did not match the registry','5 Admiralty Way, Lekki, Lagos', now() - interval '3 years', now() - interval '6 hours', now() - interval '6 hours', now() - interval '5 hours', now(), now() - interval '5 hours', NULL),
+ ('app_abuja','prj_abuja','acc_abuja','Abuja Health Group Ltd','RC1877340','ABJHEALTH','PENDING_REVIEW',NULL,'TRANSACTIONAL','COMPANY','Private clinics and diagnostics','Fatima Bello','Chief Executive',ARRAY['Your appointment is confirmed for 10:30 tomorrow.'],'VERIFIED', now() - interval '2 days',1,NULL,'7 Aminu Kano Cres, Wuse II, Abuja', now() - interval '6 years', now() - interval '2 days', now() - interval '2 days', now() - interval '2 days', now(), now() - interval '2 days', NULL),
+ ('app_verde','prj_verde','acc_verde','Verde Retail Africa','RC3390011','VERDE','APPROVED',NULL,'TRANSACTIONAL','COMPANY','Retail','Kwame Mensah','Director',ARRAY['Your order has shipped.'],'VERIFIED', now() - interval '40 days',1,NULL,'14 Ring Road, Accra', now() - interval '5 years', now() - interval '40 days', now() - interval '40 days', now() - interval '40 days', now(), now() - interval '40 days', now() - interval '38 days'),
+ ('app_swift','prj_swift','acc_swift','SwiftPay NG','RC4410222','SWIFTPAY','REJECTED','Sample content reads as an unsolicited promotion.','TRANSACTIONAL','BUSINESS_NAME','Mobile payments','Chidi Nwosu','Proprietor',ARRAY['Win big with SwiftPay! Reply YES now.'],'VERIFIED', now() - interval '12 days',1,NULL,'21 Ogui Road, Enugu', now() - interval '2 years', now() - interval '12 days', now() - interval '12 days', now() - interval '12 days', now(), now() - interval '12 days', now() - interval '10 days'),
+ ('app_draft','prj_kano_ops','acc_kano','Kano Logistics Limited','RC1044821','KANOOPS','DRAFT',NULL,'TRANSACTIONAL','COMPANY',NULL,NULL,NULL,ARRAY[]::text[],'UNVERIFIED', NULL,0,NULL,NULL,NULL,NULL,NULL, now() - interval '1 day', now(), NULL, NULL);
 
 -- fileUrl points at the CDN in front of the documents bucket.
 INSERT INTO sender_id_documents (id,"senderId","fileOriginalName","fileName",type,provider,"fileUrl","createdAt") VALUES

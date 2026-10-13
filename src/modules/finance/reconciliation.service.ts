@@ -6,10 +6,16 @@ import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service
 import { lagosDateOnly, lagosDayBounds } from '../../common/time/lagos';
 import { NotificationsGateway } from '../inbox/notifications.gateway';
 import type { AdminConfig } from '../../common/config/configuration';
+import { reconciliationKindInfo } from './reconciliation-kinds';
 
 /**
  * Checks the cash rollup against the transactions it was built from, once a day.
  * Anything past 1% raises an alert rather than sitting in a dashboard nobody reads.
+ *
+ * Both sides of the comparison are our own: the payments table in the product, and the
+ * console's rollup of it. It catches a rollup that ran on a partial day or missed a
+ * payment that changed afterwards. It does not look at Paystack or a bank statement,
+ * whatever the stored kind `PAYSTACK_SETTLEMENT` suggests.
  *
  * The provider-invoice check the PRD describes is not implemented: it compares
  * recorded provider cost against the price book, and the product schema records no
@@ -59,7 +65,7 @@ export class ReconciliationService {
     const actual = Number(rollup?.collectedNgn ?? 0);
 
     return this.record(day, 'PAYSTACK_SETTLEMENT', expected, actual, {
-      note: 'Successful transactions against the cash rollup for the same Lagos day',
+      note: 'Successful payments in the product against the console’s cash total, for the same Lagos day',
     });
   }
 
@@ -102,8 +108,8 @@ export class ReconciliationService {
       await this.notifications.broadcastToPermission('finance.read', {
         type: 'reconciliation.variance',
         severity: 'HIGH',
-        title: `${kind.replace('_', ' ').toLowerCase()} variance of ${variancePct.toFixed(2)}%`,
-        body: `Expected ₦${expected.toFixed(2)}, rollups show ₦${actual.toFixed(2)}`,
+        title: `${reconciliationKindInfo(kind).label}: ${variancePct.toFixed(2)}% variance`,
+        body: `The product recorded ₦${expected.toFixed(2)} of successful payments for the day; the console recorded ₦${actual.toFixed(2)}.`,
         link: `/finance/reconciliation?date=${date.toISOString().slice(0, 10)}`,
       });
     }
@@ -117,7 +123,14 @@ export class ReconciliationService {
       orderBy: [{ date: 'desc' }, { kind: 'asc' }],
     });
     // The whole range is returned at once; the envelope keeps every list route the
-    // same shape for callers.
-    return { data, hasMore: false, nextCursor: null };
+    // same shape for callers. `kind` stays as the stable key; show `label`.
+    return {
+      data: data.map((run) => ({
+        ...run,
+        ...reconciliationKindInfo(run.kind),
+      })),
+      hasMore: false,
+      nextCursor: null,
+    };
   }
 }
