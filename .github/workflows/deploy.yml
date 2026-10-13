@@ -1,0 +1,169 @@
+name: Deploy to droplet
+
+# Runs only after the CI workflow has passed for a commit on main, so a red build never
+# ships. `workflow_dispatch` redeploys a ref by hand (a rollback, or a re-run after fixing
+# the droplet).
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref to deploy'
+        required: false
+        default: 'main'
+
+# One deploy at a time, and never cancel one mid-flight: it may be between the
+# migration and the restart.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    name: Build and push image
+    # `event == 'push'` matters: a pull request from a fork whose branch is also called
+    # main would otherwise satisfy the branch filter and deploy code nobody reviewed.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      sha: ${{ steps.rev.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || inputs.ref }}
+
+      - id: rev
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # The commit SHA is the tag the droplet pins to, so a rollback is exact.
+          tags: |
+            type=raw,value=${{ steps.rev.outputs.sha }}
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      HOST: ${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}
+      APP_DIR: ${{ secrets.DROPLET_PATH }}
+      IMAGE: ghcr.io/${{ github.repository }}:${{ needs.build.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+
+      - name: Open an SSH session to the droplet
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DROPLET_SSH_KEY }}
+
+      - name: Trust the host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.DROPLET_HOST }}" >> ~/.ssh/known_hosts
+
+      # The compose file lives in the repo, so it travels with each deploy; otherwise a
+      # change to it would never reach the droplet. The Caddy block and .env.production
+      # are NOT copied: Caddy belongs to the monorepo's deploy, and the env file holds
+      # secrets that exist only on the droplet.
+      - name: Ship the compose file
+        run: |
+          ssh "$HOST" "mkdir -p '$APP_DIR/data'"
+          scp docker-compose.prod.yml "$HOST:$APP_DIR/docker-compose.prod.yml"
+
+      - name: Pull and restart
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ssh "$HOST" bash -euo pipefail <<REMOTE
+            cd "$APP_DIR"
+
+            test -f .env.production || { echo ".env.production is missing in $APP_DIR; create it from .env.production.example"; exit 1; }
+
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+            # Remember what is running, so a failed start can go back to it.
+            [ -f .image ] && cp .image .image.prev || true
+            echo "$IMAGE" > .image
+
+            export ADMIN_IMAGE="$IMAGE"
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+          REMOTE
+
+      # Healthy means the migrations applied and the server is listening. The first start
+      # after a schema change takes longest, hence the generous wait.
+      - name: Wait for the container to report healthy
+        run: |
+          ssh "$HOST" bash -s <<'REMOTE'
+            for i in $(seq 1 36); do
+              state=$(docker inspect -f '{{.State.Health.Status}}' zapiack_admin_core 2>/dev/null || echo missing)
+              echo "attempt $i: $state"
+              [ "$state" = healthy ] && exit 0
+              sleep 5
+            done
+            exit 1
+          REMOTE
+
+      - name: Dependencies are reachable
+        run: |
+          ssh "$HOST" bash -euo pipefail <<'REMOTE'
+            body=$(docker exec zapiack_admin_core curl -fsS http://127.0.0.1:3001/health/ready)
+            echo "$body"
+            case "$body" in *'"status":"ready"'*) ;; *) exit 1 ;; esac
+          REMOTE
+
+      - name: Roll back if it did not come up
+        if: failure()
+        run: |
+          # Unquoted heredoc on purpose: $APP_DIR must be filled in here, on the runner.
+          ssh "$HOST" bash -s <<REMOTE || true
+            cd "$APP_DIR"
+            docker compose -f docker-compose.prod.yml logs --tail 80 admin-core || true
+            if [ -f .image.prev ]; then
+              echo "rolling back to \$(cat .image.prev)"
+              cp .image.prev .image
+              ADMIN_IMAGE="\$(cat .image)" docker compose -f docker-compose.prod.yml up -d
+            fi
+          REMOTE
+
+      - name: Report the deployed revision
+        if: always()
+        run: echo "Deployed ${{ needs.build.outputs.sha }} to ${{ secrets.DROPLET_HOST }}"

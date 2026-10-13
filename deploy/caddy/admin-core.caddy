@@ -1,0 +1,74 @@
+# Site block for admin-core, to add to the Caddyfile that already serves the main app.
+#
+# That Caddyfile lives in the MONOREPO (zapiack-backend/Caddyfile) and its deploy
+# workflow rewrites /opt/zapiack/Caddyfile on the droplet from it. A change made on the
+# droplet by hand is therefore lost at the next monorepo deploy: add this block to the
+# monorepo's Caddyfile, commit it there, and let that deploy ship it.
+#
+# It relies on two things the main Caddyfile already defines, so do not repeat them:
+#   - the global `servers { trusted_proxies ... client_ip_headers CF-Connecting-IP }`
+#     block, which makes {client_ip} the real visitor even behind Cloudflare, and
+#   - the `(real_client_ip)` snippet, which hands admin-core one clean X-Forwarded-For.
+# admin-core trusts exactly one proxy hop (this Caddy), so it reads that value as the
+# client's address. The IP allowlist, the live map and every audit entry depend on it.
+#
+# Pasted at the end of the file, after the `{$API_DOMAIN} { ... }` block.
+# DNS for the hostname must point at this droplet before Caddy can get a certificate.
+
+admin-api.zapiack.com {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# Live map and staff inbox are long-lived text/event-stream responses. Without
+	# flush_interval -1 Caddy buffers events and the map appears frozen.
+	@sse path /admin/v1/geo/live /admin/v1/events
+	handle @sse {
+		reverse_proxy admin-core:3001 {
+			import real_client_ip
+			flush_interval -1
+			transport http {
+				read_timeout 24h
+			}
+		}
+	}
+
+	# Sender ID document zips stream through admin-core and can take a while.
+	@downloads path_regexp zip ^/admin/v1/sender-ids/[^/]+/documents\.zip$
+	handle @downloads {
+		reverse_proxy admin-core:3001 {
+			import real_client_ip
+			flush_interval -1
+			transport http {
+				read_timeout 10m
+				write_timeout 10m
+			}
+		}
+	}
+
+	# Everything else. The health check lets Caddy stop sending traffic to a container
+	# that is mid-restart (it is applying migrations) instead of returning errors.
+	handle {
+		reverse_proxy admin-core:3001 {
+			import real_client_ip
+			health_uri /health
+			health_interval 30s
+			health_timeout 5s
+			transport http {
+				read_timeout 60s
+				write_timeout 60s
+			}
+		}
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

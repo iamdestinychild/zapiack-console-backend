@@ -1,0 +1,62 @@
+# admin-core on the APP droplet, beside the main Zapiack stack.
+#
+#   export ADMIN_IMAGE=$(cat .image)
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# What this deliberately does NOT contain:
+#   - a Caddy. The droplet's Caddy (container zapiack_caddy, owned by the monorepo's
+#     deploy) terminates TLS for every site. This container joins its Docker network and
+#     Caddy proxies to it by name, so nothing is published on the host.
+#   - Postgres or Redis. Both live on the DATA droplet and are reached over the private
+#     (VPC) network; their addresses are in .env.production.
+#
+# One container runs the web server and the background workers (ADMIN_ROLE=all). The
+# droplet has 2 GB shared with the main stack, so a second Node process for the worker
+# is not affordable.
+#
+# Migrations run when the container starts (ADMIN_RUN_MIGRATIONS=true): the entrypoint
+# applies them before the server listens, retries, and refuses to start if they fail,
+# so Caddy keeps getting connection errors rather than a server on the wrong schema.
+
+name: zapiack-admin
+
+services:
+  admin-core:
+    image: ${ADMIN_IMAGE:?set ADMIN_IMAGE, e.g. export ADMIN_IMAGE=$(cat .image)}
+    container_name: zapiack_admin_core
+    restart: unless-stopped
+    env_file: [.env.production]
+    environment:
+      ADMIN_ROLE: all
+      PORT: 3001
+      ADMIN_RUN_MIGRATIONS: 'true'
+      # Keep V8 well inside the container limit so it garbage-collects instead of being
+      # OOM-killed. Roughly 80% of mem_limit, less room for native memory.
+      NODE_OPTIONS: --max-old-space-size=288
+    # The droplet runs ~1.4 GB of other containers in 2 GB. A hard ceiling means a leak
+    # here restarts this container rather than starving the main API.
+    mem_limit: 420m
+    volumes:
+      # GeoLite2 is licensed and refreshed on its own schedule, so it is mounted, not
+      # baked in. Optional: without it staff sign-in locations are simply unknown.
+      - ./data:/app/data:ro
+    networks:
+      zapiack:
+        # The name Caddy proxies to. Stable even if the container is renamed.
+        aliases: [admin-core]
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:3001/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    logging:
+      driver: json-file
+      options: { max-size: '10m', max-file: '5' }
+
+networks:
+  zapiack:
+    # Created by the main stack's compose project. Joined, never created or removed, so
+    # redeploying either stack cannot disturb the other.
+    external: true
+    name: zapiack_zapiack

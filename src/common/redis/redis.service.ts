@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import type { AdminConfig } from '../config/configuration';
+import { redisOptionsFromUrl } from './redis-url';
 
 /**
  * One Redis, three uses: session state, the request-event stream feeding the
@@ -115,14 +116,9 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
    * keys land under the admin namespace rather than the shared default `bull:`.
    */
   get bullConnection() {
-    const url = new URL(this.config.get('admin', { infer: true }).redis.url);
-    return {
-      host: url.hostname,
-      port: Number(url.port || 6379),
-      password: url.password || undefined,
-      username: url.username || undefined,
-      maxRetriesPerRequest: null,
-    };
+    return redisOptionsFromUrl(
+      this.config.get('admin', { infer: true }).redis.url,
+    );
   }
 
   async onModuleDestroy() {

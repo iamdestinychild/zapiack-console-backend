@@ -169,15 +169,21 @@ the shape of the API, never any data.
 
 ## Deploying
 
-Render, from GitHub. A Blueprint (`render.yaml`) describes the web service and a Key Value
-instance; the console is a static site with its own Blueprint in the dashboard repo. A
-push deploys only once the GitHub Actions run for that commit is green
-(`autoDeployTrigger: checksPass`), and the container applies migrations as it starts.
+**DigitalOcean droplet (production).** One container beside the main Zapiack stack, behind
+the Caddy that is already there, using the Postgres and Redis on the data droplet over the
+private network. `docker-compose.prod.yml` describes it, `.env.production.example` lists the
+environment, and `.github/workflows/deploy.yml` ships it once CI is green on `main`.
 
-Read [docs/deployment.md](docs/deployment.md) before the first deploy. Three Render
-limits shape this design and cost you something: a free web service sleeps after 15 idle
-minutes, free Postgres is deleted after 30 days (so the Admin DB must live elsewhere), and
-pre-deploy commands are paid-only.
+Read [docs/deployment-droplet.md](docs/deployment-droplet.md) before the first deploy. Two things
+are done outside this repo: the Admin database and its roles are created on the data droplet
+(`deploy/data-droplet/admin-db.sql`), and the Caddy site block
+(`deploy/caddy/admin-core.caddy`) is added to the **monorepo's** `Caddyfile`, because that
+file is rewritten from the monorepo on every deploy of the main app.
+
+**Render (alternative, not in use).** `render.yaml` and [docs/deployment.md](docs/deployment.md)
+describe a Render deployment. It works, but the free tier sleeps when idle, expires its
+Postgres after 30 days and has no pre-deploy command, which is why production moved to the
+droplet.
 
 ## Testing
 
