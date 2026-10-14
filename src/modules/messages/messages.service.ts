@@ -2,7 +2,11 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '../../generated/zapiack/client';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { maskEmail, maskPhone } from '../../common/http/masking';
-import { buildPage, cursorWhere, decodeCursor } from '../../common/http/pagination';
+import {
+  buildPage,
+  cursorWhere,
+  decodeCursor,
+} from '../../common/http/pagination';
 import { resolveRange } from '../../common/time/lagos';
 import { extractLinks, preview } from './message-signals';
 import type { ListMessagesDto } from './dto/messages.dto';
@@ -69,10 +73,16 @@ export class MessagesService {
         accountId: row.accountId,
         projectId: row.projectId,
         recipient: maskRecipient(row.channel, row.recipient),
-        sender: row.senderId ?? (row.metadata as { from?: string } | null)?.from ?? null,
+        sender:
+          row.senderId ??
+          (row.metadata as { from?: string } | null)?.from ??
+          null,
         countryCode: row.countryCode,
-        templateId: (row.metadata as { templateId?: string } | null)?.templateId ?? null,
-        templateName: (row.metadata as { templateName?: string } | null)?.templateName ?? null,
+        templateId:
+          (row.metadata as { templateId?: string } | null)?.templateId ?? null,
+        templateName:
+          (row.metadata as { templateName?: string } | null)?.templateName ??
+          null,
         preview: preview(row.content),
         hasLinks: extractLinks(row.content).length > 0,
         createdAt: row.createdAt,

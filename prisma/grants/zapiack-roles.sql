@@ -12,7 +12,7 @@
 --
 -- What is deliberately NOT granted, and why:
 --   api_keys."keyHash"            the console shows a key's prefix, never its hash
---   (log_events."content"/recipient and mail_events were withheld at first. They are now
+--   (log_events."content"/recipient and the MailEvent table were withheld at first. They are now
 --   granted below, for the Messages screen: compliance has to see what a template is
 --   really used to send. The console masks the recipient and audits each body it opens.)
 --   transactions metadata/gatewayResponse/idempotencyKey/cardId/fx*   gateway internals
@@ -48,7 +48,7 @@ GRANT SELECT (id, "accountId", "projectId", channel, status, "requestId", "tabTr
 -- api-core's retention job after RETENTION_EMAIL_BODY_DAYS.
 GRANT SELECT (id, "accountId", "projectId", "from", "replyTo", subject, html, text,
               "templateId", variables, status, "createdAt")
-  ON mail_events TO admin_reader;
+  ON "MailEvent" TO admin_reader;
 GRANT SELECT (id, "accountId", "projectId", name, "verificationStatus")
   ON templates TO admin_reader;
 

@@ -38,7 +38,9 @@ export function hostOf(url: string): string {
 }
 
 /** Distinct links in the text, in the order they appear. Trailing punctuation is not part of a link. */
-export function extractLinks(...texts: Array<string | null | undefined>): MessageLink[] {
+export function extractLinks(
+  ...texts: Array<string | null | undefined>
+): MessageLink[] {
   const seen = new Set<string>();
   const links: MessageLink[] = [];
   for (const text of texts) {

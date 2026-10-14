@@ -18,7 +18,11 @@ export class MessagesController {
   }
 
   @Get(':id')
-  @Audited({ action: 'messages.view', targetType: 'message', targetParam: 'id' })
+  @Audited({
+    action: 'messages.view',
+    targetType: 'message',
+    targetParam: 'id',
+  })
   get(@Param('id') id: string) {
     return this.messages.get(id);
   }

@@ -5,7 +5,7 @@ GRANT SELECT (content, recipient) ON log_events TO admin_reader;
 
 GRANT SELECT (id, "accountId", "projectId", "from", "replyTo", subject, html, text,
               "templateId", variables, status, "createdAt")
-  ON mail_events TO admin_reader;
+  ON "MailEvent" TO admin_reader;
 
 GRANT SELECT (id, "accountId", "projectId", name, "verificationStatus")
   ON templates TO admin_reader;

@@ -79,7 +79,13 @@ import { variableNames } from './template-rules';
 
 describe('the variable names the console shows', () => {
   it('reads api-core objects as names, marking arrays', () => {
-    expect(variableNames([{ key: 'heading', type: 'string' }, { key: 'paragraphs', type: 'array' }, 'code'])).toEqual(['heading', 'paragraphs[]', 'code']);
+    expect(
+      variableNames([
+        { key: 'heading', type: 'string' },
+        { key: 'paragraphs', type: 'array' },
+        'code',
+      ]),
+    ).toEqual(['heading', 'paragraphs[]', 'code']);
   });
 
   it('is empty for anything else, never [object Object]', () => {

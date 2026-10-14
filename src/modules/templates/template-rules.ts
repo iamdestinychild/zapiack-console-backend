@@ -105,7 +105,8 @@ export function variableNames(variables: unknown): string[] {
       names.push(entry);
     } else if (entry && typeof entry === 'object') {
       const { key, type } = entry as { key?: unknown; type?: unknown };
-      if (typeof key === 'string') names.push(type === 'array' ? `${key}[]` : key);
+      if (typeof key === 'string')
+        names.push(type === 'array' ? `${key}[]` : key);
     }
   }
   return names;
