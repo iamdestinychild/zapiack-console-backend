@@ -30,6 +30,7 @@ import { CreditsModule } from './modules/credits/credits.module';
 import { PlansModule } from './modules/plans/plans.module';
 import { FinanceModule } from './modules/finance/finance.module';
 import { ServicesModule } from './modules/services/services.module';
+import { MemoryReporter } from './common/diagnostics/memory-reporter.service';
 import { MessagesModule } from './modules/messages/messages.module';
 import { TemplatesModule } from './modules/templates/templates.module';
 import { GeoModule } from './modules/geo/geo.module';
@@ -121,6 +122,8 @@ import { JobsModule } from './modules/jobs/jobs.module';
     { provide: APP_INTERCEPTOR, useClass: SerialisationInterceptor },
 
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
+
+    MemoryReporter,
   ],
 })
 export class AppModule implements NestModule {
