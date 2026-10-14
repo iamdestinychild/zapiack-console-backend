@@ -19,6 +19,7 @@ export const PERMISSIONS = {
   geo: ['geo.view'],
   senderid: ['senderid.review', 'senderid.documents.download'],
   templates: ['templates.review'],
+  messages: ['messages.read'],
   notifications: [
     'notifications.send',
     'notifications.broadcast',
@@ -97,6 +98,7 @@ export const SYSTEM_ROLES: Record<
       'senderid.review',
       'senderid.documents.download',
       'templates.review',
+      'messages.read',
       'pii.reveal',
       'audit.read',
     ],

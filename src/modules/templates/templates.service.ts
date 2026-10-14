@@ -11,6 +11,7 @@ import {
   assertAllowed,
   auditAction,
   flagsOf,
+  variableNames,
   type TemplateAction,
 } from './template-rules';
 import type { ListTemplatesDto } from './dto/templates.dto';
@@ -189,7 +190,7 @@ export class TemplatesService {
     const hasContent = Boolean(row.html);
     return {
       ...this.summary(row),
-      variables: row.variables,
+      variables: variableNames(row.variables),
       /**
        * The customer's HTML, exactly as stored. It is untrusted: render it only inside
        * a sandboxed iframe (`srcdoc`, `sandbox=""`), never straight into the page.

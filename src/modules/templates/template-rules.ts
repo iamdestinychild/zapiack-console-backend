@@ -91,3 +91,22 @@ export function auditAction(action: TemplateAction): string {
       ? 'templates.revoked'
       : 'templates.rejected';
 }
+
+/**
+ * The names a template expects, as the console shows them. api-core stores each variable as
+ * an object ({ key, type, required, ... }); the console wants plain names, and an array
+ * of objects reads as `items[]`. A plain string (an older row) passes through.
+ */
+export function variableNames(variables: unknown): string[] {
+  if (!Array.isArray(variables)) return [];
+  const names: string[] = [];
+  for (const entry of variables) {
+    if (typeof entry === 'string') {
+      names.push(entry);
+    } else if (entry && typeof entry === 'object') {
+      const { key, type } = entry as { key?: unknown; type?: unknown };
+      if (typeof key === 'string') names.push(type === 'array' ? `${key}[]` : key);
+    }
+  }
+  return names;
+}

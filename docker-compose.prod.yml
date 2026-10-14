@@ -32,10 +32,10 @@ services:
       ADMIN_RUN_MIGRATIONS: 'true'
       # Keep V8 well inside the container limit so it garbage-collects instead of being
       # OOM-killed. Roughly 80% of mem_limit, less room for native memory.
-      NODE_OPTIONS: --max-old-space-size=288
+      NODE_OPTIONS: --max-old-space-size=448
     # The droplet runs ~1.4 GB of other containers in 2 GB. A hard ceiling means a leak
     # here restarts this container rather than starving the main API.
-    mem_limit: 420m
+    mem_limit: 640m
     volumes:
       # GeoLite2 is licensed and refreshed on its own schedule, so it is mounted, not
       # baked in. Optional: without it staff sign-in locations are simply unknown.

@@ -12,8 +12,9 @@
 --
 -- What is deliberately NOT granted, and why:
 --   api_keys."keyHash"            the console shows a key's prefix, never its hash
---   log_events."content"/recipient  message bodies and phone numbers; the console only
---                                 aggregates counts, cost, status, operator and country
+--   (log_events."content"/recipient and mail_events were withheld at first. They are now
+--   granted below, for the Messages screen: compliance has to see what a template is
+--   really used to send. The console masks the recipient and audits each body it opens.)
 --   transactions metadata/gatewayResponse/idempotencyKey/cardId/fx*   gateway internals
 --   tab_transactions / transactions writes   the credit ledger belongs to api-core
 --   cards, domains, otps, whatsapp_connections, webhook_events, sns_events,
@@ -40,8 +41,16 @@ GRANT SELECT (id, "accountId", "userId", "projectId", name, permission, "usageCo
 
 GRANT SELECT (id, "accountId", "projectId", channel, status, "requestId", "tabTransactionId",
               error, attempts, "senderId", operator, "countryCode", cost, metadata,
-              "createdAt", "updatedAt")
+              content, recipient, "createdAt", "updatedAt")
   ON log_events TO admin_reader;
+
+-- What an email was and what it said, for the Messages screen. Bodies are cleared by
+-- api-core's retention job after RETENTION_EMAIL_BODY_DAYS.
+GRANT SELECT (id, "accountId", "projectId", "from", "replyTo", subject, html, text,
+              "templateId", variables, status, "createdAt")
+  ON mail_events TO admin_reader;
+GRANT SELECT (id, "accountId", "projectId", name, "verificationStatus")
+  ON templates TO admin_reader;
 
 GRANT SELECT (id, "accountId", "subscriptionId", type, amount, currency, status,
               description, reference, "createdAt", "creditedAt", "updatedAt")
