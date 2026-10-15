@@ -10,6 +10,7 @@ import {
   InAppDeliveryService,
   type InAppRecipient,
 } from './in-app-delivery.service';
+import { traced } from '../../common/diagnostics/memory-trace';
 
 const BATCH_SIZE = 200;
 
@@ -31,7 +32,12 @@ export class CampaignProcessor extends WorkerHost {
     super();
   }
 
+  /** Every job runs through here so `MEMORY_TRACE` can say which one keeps memory. */
   async process(job: Job): Promise<unknown> {
+    return traced(`${job.queueName}:${job.name}`, () => this.run(job));
+  }
+
+  private async run(job: Job): Promise<unknown> {
     if (job.name !== JOBS.sendCampaign) return null;
 
     const { campaignId, retry } = job.data as CampaignJobData;

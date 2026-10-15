@@ -93,20 +93,29 @@ export class ZapiackWriteService
     await this.$disconnect();
   }
 
-  /** Guarded client. Use this rather than the instance, so the ledger stays out. */
+  private guarded?: ReturnType<typeof guard>;
+
+  /**
+   * Guarded client. Use this rather than the instance, so the ledger stays out.
+   * Built once, not on every access.
+   */
   get write() {
-    return this.$extends({
-      query: {
-        $allOperations({ operation, model, args, query }) {
-          if (isLedgerWrite(operation, model)) {
-            throw new Error(
-              `Refused ${operation} on ${model}: the credit ledger belongs to api-core. ` +
-                'Route balance changes through the credit adjustment flow.',
-            );
-          }
-          return query(args);
-        },
-      },
-    });
+    return (this.guarded ??= guard(this));
   }
+}
+
+function guard(client: PrismaClient) {
+  return client.$extends({
+    query: {
+      $allOperations({ operation, model, args, query }) {
+        if (isLedgerWrite(operation, model)) {
+          throw new Error(
+            `Refused ${operation} on ${model}: the credit ledger belongs to api-core. ` +
+              'Route balance changes through the credit adjustment flow.',
+          );
+        }
+        return query(args);
+      },
+    },
+  });
 }

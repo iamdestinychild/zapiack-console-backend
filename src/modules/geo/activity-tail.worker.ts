@@ -10,11 +10,16 @@ import { SseService } from '../../common/sse/sse.service';
 import { maskIp } from '../../common/http/masking';
 import { geocode } from '../../common/geo/geocode';
 import type { AdminConfig } from '../../common/config/configuration';
+import { everyNth, traced } from '../../common/diagnostics/memory-trace';
 
 /** How often the tail looks for new rows. The map's "under 5s" target allows this. */
 const POLL_MS = 3_000;
 /** Ceiling per poll, so a traffic burst cannot pull an unbounded page. */
 const BATCH = 200;
+/** With MEMORY_TRACE on, one poll in this many is measured (about once a minute). */
+const TRACE_EVERY = 20;
+/** At most one "skipped polls" warning per this long, so a slow database cannot flood the log. */
+const SKIP_WARN_MS = 60_000;
 
 /**
  * Feeds the live map by tailing the product's own `api_activity_logs`.
@@ -33,6 +38,16 @@ export class ActivityTailWorker implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ActivityTailWorker.name);
   private timer?: NodeJS.Timeout;
   private running = false;
+  /**
+   * True while a poll is in progress. Without it a poll that takes longer than POLL_MS
+   * is joined by another every three seconds: each holds up to a page of rows and waits
+   * for one of a handful of connections, so a slow database turns into a growing pile of
+   * queued work and memory instead of a poll that simply runs a little late.
+   */
+  private inFlight = false;
+  private skipped = 0;
+  private lastSkipWarn = 0;
+  private readonly sampler = { n: 0 };
   /** Rows at or before this point have already been published. */
   private watermark = new Date();
   private readonly perSecond: number;
@@ -56,6 +71,33 @@ export class ActivityTailWorker implements OnModuleInit, OnModuleDestroy {
   private async tick() {
     if (!this.running) return;
 
+    // The previous poll is still running: do nothing this time. The watermark means the
+    // next poll picks up exactly where this one would have, so nothing is missed.
+    if (this.inFlight) {
+      this.skipped += 1;
+      const now = Date.now();
+      if (now - this.lastSkipWarn >= SKIP_WARN_MS) {
+        this.lastSkipWarn = now;
+        this.logger.warn(
+          `Activity tail is slower than ${POLL_MS}ms; skipped ${this.skipped} poll(s) so far`,
+        );
+      }
+      return;
+    }
+
+    this.inFlight = true;
+    try {
+      if (everyNth(this.sampler, TRACE_EVERY)) {
+        await traced('geo:activity-tail', () => this.poll());
+      } else {
+        await this.poll();
+      }
+    } finally {
+      this.inFlight = false;
+    }
+  }
+
+  private async poll() {
     try {
       const rows = await this.zapiack.read.apiActivityLog.findMany({
         where: { createdAt: { gt: this.watermark } },

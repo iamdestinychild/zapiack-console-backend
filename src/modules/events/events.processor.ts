@@ -7,6 +7,7 @@ import { SenderIdsService } from '../sender-ids/sender-ids.service';
 import { NotificationsGateway } from '../inbox/notifications.gateway';
 import { JOBS, QUEUES, type EventJobData } from '../jobs/queues';
 import { EventsService } from './events.service';
+import { traced } from '../../common/diagnostics/memory-trace';
 
 /** Failed payments above this in a rolling hour is worth waking someone for. */
 const PAYMENT_FAILURE_SPIKE = 20;
@@ -25,7 +26,12 @@ export class EventsProcessor extends WorkerHost {
     super();
   }
 
+  /** Every job runs through here so `MEMORY_TRACE` can say which one keeps memory. */
   async process(job: Job): Promise<unknown> {
+    return traced(`${job.queueName}:${job.name}`, () => this.run(job));
+  }
+
+  private async run(job: Job): Promise<unknown> {
     if (job.name === JOBS.eventSweep)
       return { requeued: await this.events.sweep() };
     if (job.name !== JOBS.processEvent) return null;

@@ -10,6 +10,7 @@ import { LAGOS } from '../../common/time/lagos';
 import { SenderIdsService } from '../sender-ids/sender-ids.service';
 import type { AdminConfig } from '../../common/config/configuration';
 import { JOBS, QUEUES } from './queues';
+import { traced } from '../../common/diagnostics/memory-trace';
 
 /** Partitions are created this far ahead so a clock skew never loses a day's logs. */
 const PARTITION_LOOKAHEAD_DAYS = 3;
@@ -31,7 +32,12 @@ export class MaintenanceProcessor extends WorkerHost {
     }).limits.requestLogRetentionDays;
   }
 
+  /** Every job runs through here so `MEMORY_TRACE` can say which one keeps memory. */
   async process(job: Job): Promise<unknown> {
+    return traced(`${job.queueName}:${job.name}`, () => this.run(job));
+  }
+
+  private async run(job: Job): Promise<unknown> {
     switch (job.name) {
       case JOBS.partitions:
         return { created: await this.ensurePartitions() };

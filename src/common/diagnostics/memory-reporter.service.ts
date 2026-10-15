@@ -5,6 +5,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { formatMemory } from './memory-report';
+import { canForceGc, traceEnabled, traceSummary } from './memory-trace';
 
 const EVERY_MS = 5 * 60_000;
 
@@ -29,12 +30,21 @@ export class MemoryReporter implements OnModuleInit, OnModuleDestroy {
   }
 
   private report() {
+    // With MEMORY_TRACE on and --expose-gc, collect first: the heap figure is then what is
+    // really being retained, and a climb in it across reports is the leak, without the
+    // noise of garbage that simply has not been collected yet.
+    const collected = traceEnabled() && canForceGc();
+    if (collected) (globalThis as { gc?: () => void }).gc?.();
+
     const handles =
       typeof process.getActiveResourcesInfo === 'function'
         ? process.getActiveResourcesInfo()
         : [];
+    const holders = traceEnabled() ? traceSummary() : '';
     this.logger.log(
-      formatMemory(process.memoryUsage(), handles, process.uptime()),
+      formatMemory(process.memoryUsage(), handles, process.uptime()) +
+        (collected ? ' (after gc)' : '') +
+        (holders ? ` retained-by: ${holders}` : ''),
     );
   }
 

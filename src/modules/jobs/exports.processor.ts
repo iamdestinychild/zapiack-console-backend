@@ -8,6 +8,7 @@ import { maskEmail } from '../../common/http/masking';
 import { toDisplayString } from '../../common/http/stringify';
 import { lagosDateOnly, resolveRange } from '../../common/time/lagos';
 import { JOBS, QUEUES, type ExportJobData } from './queues';
+import { traced } from '../../common/diagnostics/memory-trace';
 
 /** Hard cap so one export cannot pull the whole database into memory. */
 const MAX_ROWS = 200_000;
@@ -28,7 +29,12 @@ export class ExportsProcessor extends WorkerHost {
     super();
   }
 
+  /** Every job runs through here so `MEMORY_TRACE` can say which one keeps memory. */
   async process(job: Job): Promise<unknown> {
+    return traced(`${job.queueName}:${job.name}`, () => this.run(job));
+  }
+
+  private async run(job: Job): Promise<unknown> {
     if (job.name !== JOBS.runExport) return null;
 
     const { exportId } = job.data as ExportJobData;

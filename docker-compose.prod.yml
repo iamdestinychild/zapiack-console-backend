@@ -33,6 +33,12 @@ services:
       # Keep V8 well inside the container limit so it garbage-collects instead of being
       # OOM-killed. Roughly 80% of mem_limit, less room for native memory.
       NODE_OPTIONS: --max-old-space-size=448
+      # To find what is holding memory, switch tracing on for a few hours (it forces garbage
+      # collections, so leave it off otherwise): add --expose-gc to NODE_OPTIONS above and set
+      #   MEMORY_TRACE: 'true'
+      # The 5-minute memory line then reports the heap after a collection, and each queue job
+      # logs "memory-trace <queue>:<job> retained=+X MB". The label whose total keeps rising
+      # is the holder. Note the rollups queue runs two jobs at once, so its figures overlap.
     # The droplet runs ~1.4 GB of other containers in 2 GB. A hard ceiling means a leak
     # here restarts this container rather than starving the main API.
     mem_limit: 640m

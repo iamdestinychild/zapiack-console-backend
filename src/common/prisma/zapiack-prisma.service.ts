@@ -60,19 +60,30 @@ export class ZapiackPrismaService
     await this.$disconnect();
   }
 
-  /** Guarded client; use this everywhere instead of the raw instance. */
+  private guarded?: ReturnType<typeof guard>;
+
+  /**
+   * Guarded client; use this everywhere instead of the raw instance.
+   *
+   * Built once. It used to be built on every access, and the live-map poll alone
+   * touches it every three seconds, so each use paid for a new extended client.
+   */
   get read() {
-    return this.$extends({
-      query: {
-        $allOperations({ operation, model, args, query }) {
-          if (MUTATING.has(operation)) {
-            throw new Error(
-              `Refused ${operation} on ${model ?? 'raw SQL'}: the Zapiack DB is read-only from admin-core. Route the write through api-core.`,
-            );
-          }
-          return query(args);
-        },
-      },
-    });
+    return (this.guarded ??= guard(this));
   }
+}
+
+function guard(client: PrismaClient) {
+  return client.$extends({
+    query: {
+      $allOperations({ operation, model, args, query }) {
+        if (MUTATING.has(operation)) {
+          throw new Error(
+            `Refused ${operation} on ${model ?? 'raw SQL'}: the Zapiack DB is read-only from admin-core. Route the write through api-core.`,
+          );
+        }
+        return query(args);
+      },
+    },
+  });
 }

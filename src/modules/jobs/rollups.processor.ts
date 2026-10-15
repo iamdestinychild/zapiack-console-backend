@@ -8,6 +8,7 @@ import { ReconciliationService } from '../finance/reconciliation.service';
 import { ProviderHealthService } from '../services/provider-health.service';
 import { RiskService } from '../risk/risk.service';
 import { JOBS, QUEUES, type DayJobData } from './queues';
+import { traced } from '../../common/diagnostics/memory-trace';
 
 @Processor(QUEUES.rollups, { concurrency: 2 })
 export class RollupsProcessor extends WorkerHost {
@@ -22,7 +23,12 @@ export class RollupsProcessor extends WorkerHost {
     super();
   }
 
+  /** Every job runs through here so `MEMORY_TRACE` can say which one keeps memory. */
   async process(job: Job): Promise<unknown> {
+    return traced(`${job.queueName}:${job.name}`, () => this.run(job));
+  }
+
+  private async run(job: Job): Promise<unknown> {
     switch (job.name) {
       case JOBS.rollUsageCurrentDay: {
         // Recompute the whole Lagos day rather than just the last few minutes: late
