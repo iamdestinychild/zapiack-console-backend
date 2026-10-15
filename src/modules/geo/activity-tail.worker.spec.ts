@@ -18,10 +18,19 @@ function build() {
       },
     },
   };
-  const sse = { publish: async (_c: string, _e: string, data: unknown) => void published.push(data) };
+  const sse = {
+    publish: (_c: string, _e: string, data: unknown) => {
+      published.push(data);
+      return Promise.resolve();
+    },
+  };
   const config = { get: () => ({ limits: { liveMapEventsPerSecond: 50 } }) };
 
-  const worker = new ActivityTailWorker(zapiack as never, sse as never, config as never);
+  const worker = new ActivityTailWorker(
+    zapiack as never,
+    sse as never,
+    config as never,
+  );
   (worker as unknown as { running: boolean }).running = true;
 
   return {
@@ -75,7 +84,11 @@ describe('ActivityTailWorker polling', () => {
 
   it('is not left blocked by a poll that fails', async () => {
     const h = build();
-    const failing = (h.worker as unknown as { zapiack: { read: { apiActivityLog: { findMany: () => never } } } }).zapiack;
+    const failing = (
+      h.worker as unknown as {
+        zapiack: { read: { apiActivityLog: { findMany: () => never } } };
+      }
+    ).zapiack;
     failing.read.apiActivityLog.findMany = () => {
       throw new Error('db down');
     };
@@ -96,6 +109,8 @@ describe('ActivityTailWorker polling', () => {
 
     expect(h.published).toHaveLength(1);
     expect((h.published[0] as unknown[]).length).toBe(2);
-    expect((h.worker as unknown as { watermark: Date }).watermark.toISOString()).toBe(row(2).createdAt.toISOString());
+    expect(
+      (h.worker as unknown as { watermark: Date }).watermark.toISOString(),
+    ).toBe(row(2).createdAt.toISOString());
   });
 });

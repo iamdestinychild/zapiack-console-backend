@@ -65,7 +65,10 @@ export function resetTrace() {
  * Runs `fn` and, when tracing is on, reports what it retained. Never changes the result
  * or swallows an error: a failing job still fails, and is measured on the way out.
  */
-export async function traced<T>(label: string, fn: () => Promise<T>): Promise<T> {
+export async function traced<T>(
+  label: string,
+  fn: () => Promise<T>,
+): Promise<T> {
   if (!traceEnabled()) return fn();
 
   if (!canForceGc() && !warnedNoGc) {

@@ -23,21 +23,21 @@ describe('memory trace', () => {
 
   it('returns the result unchanged when off, and records nothing', async () => {
     delete process.env['MEMORY_TRACE'];
-    await expect(traced('job', async () => 42)).resolves.toBe(42);
+    await expect(traced('job', () => Promise.resolve(42))).resolves.toBe(42);
     expect(traceSummary()).toBe('');
   });
 
   it('returns the result unchanged when on', async () => {
     process.env['MEMORY_TRACE'] = 'true';
-    await expect(traced('job', async () => 'done')).resolves.toBe('done');
+    await expect(traced('job', () => Promise.resolve('done'))).resolves.toBe(
+      'done',
+    );
   });
 
   it('still fails when the work fails, and still measures it', async () => {
     process.env['MEMORY_TRACE'] = 'true';
     await expect(
-      traced('job', async () => {
-        throw new Error('boom');
-      }),
+      traced('job', () => Promise.reject(new Error('boom'))),
     ).rejects.toThrow('boom');
   });
 
@@ -46,12 +46,13 @@ describe('memory trace', () => {
     const kept: unknown[] = [];
 
     for (let i = 0; i < 3; i++) {
-      await traced('leaky', async () => {
+      await traced('leaky', () => {
         // Objects on the V8 heap (a Buffer's bytes are outside it), held by something outside the job.
         kept.push(Array.from({ length: 150_000 }, (_, n) => ({ n, tag: 'x' })));
+        return Promise.resolve();
       });
     }
-    await traced('tidy', async () => undefined);
+    await traced('tidy', () => Promise.resolve(undefined));
 
     expect(traceSummary()).toMatch(/^leaky=\+/);
     expect(kept).toHaveLength(3);
