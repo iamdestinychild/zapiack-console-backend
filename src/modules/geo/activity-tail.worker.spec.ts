@@ -1,10 +1,13 @@
 import { ActivityTailWorker } from './activity-tail.worker';
 
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
 /** A poll the test can hold open, to see what a second tick does while it is running. */
 function build() {
   let release!: (rows: unknown[]) => void;
   let calls = 0;
   const published: unknown[] = [];
+  const state = { viewers: true };
 
   const zapiack = {
     read: {
@@ -19,12 +22,17 @@ function build() {
     },
   };
   const sse = {
+    hasViewers: () => Promise.resolve(state.viewers),
     publish: (_c: string, _e: string, data: unknown) => {
       published.push(data);
       return Promise.resolve();
     },
   };
-  const config = { get: () => ({ limits: { liveMapEventsPerSecond: 50 } }) };
+  const config = {
+    get: () => ({
+      limits: { liveMapEventsPerSecond: 50, liveMapPollSeconds: 3 },
+    }),
+  };
 
   const worker = new ActivityTailWorker(
     zapiack as never,
@@ -37,7 +45,13 @@ function build() {
     worker,
     tick: () => (worker as unknown as { tick: () => Promise<void> }).tick(),
     calls: () => calls,
-    finish: (rows: unknown[] = []) => release(rows),
+    // The tick checks for viewers before it queries, so let that settle first.
+    finish: async (rows: unknown[] = []) => {
+      await flush();
+      release(rows);
+    },
+    state,
+    flush,
     published,
   };
 }
@@ -60,12 +74,13 @@ describe('ActivityTailWorker polling', () => {
     const h = build();
 
     const first = h.tick();
+    await h.flush();
     await h.tick();
     await h.tick();
 
     expect(h.calls()).toBe(1);
 
-    h.finish();
+    await h.finish();
     await first;
   });
 
@@ -73,12 +88,13 @@ describe('ActivityTailWorker polling', () => {
     const h = build();
 
     const first = h.tick();
-    h.finish();
+    await h.finish();
     await first;
 
     const second = h.tick();
+    await h.flush();
     expect(h.calls()).toBe(2);
-    h.finish();
+    await h.finish();
     await second;
   });
 
@@ -104,7 +120,7 @@ describe('ActivityTailWorker polling', () => {
     const h = build();
 
     const poll = h.tick();
-    h.finish([row(1), row(2)]);
+    await h.finish([row(1), row(2)]);
     await poll;
 
     expect(h.published).toHaveLength(1);
@@ -112,5 +128,19 @@ describe('ActivityTailWorker polling', () => {
     expect(
       (h.worker as unknown as { watermark: Date }).watermark.toISOString(),
     ).toBe(row(2).createdAt.toISOString());
+  });
+
+  it('does not query at all while nobody has the map open', async () => {
+    const h = build();
+    h.state.viewers = false;
+
+    await h.tick();
+
+    expect(h.calls()).toBe(0);
+    expect(h.published).toHaveLength(0);
+    // The idle period is skipped, not replayed to the next viewer.
+    expect(
+      (h.worker as unknown as { watermark: Date }).watermark.getTime(),
+    ).toBeGreaterThan(Date.now() - 5_000);
   });
 });

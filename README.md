@@ -93,7 +93,7 @@ it to a database whose request log is already in use.
   console origin. Optional per-role IP allowlist.
 - **PII** — emails, phone numbers and IPs — is masked by default everywhere, including
   in exports. Unmasking needs `pii.reveal`, a written reason, and is audited field by
-  field. Rate limited per staff member.
+  field.
 - **Sensitive actions** need a written reason; credit adjustments above ₦100,000 need a
   second approver who is not the requester; broadcasts above 1,000 accounts need Super
   admin approval. "View as customer" is read-only and time-boxed.

@@ -8,7 +8,6 @@ import {
   Query,
   Req,
 } from '@nestjs/common';
-import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
 import {
   Audited,
@@ -236,10 +235,9 @@ export class CustomersController {
 
   // ---------------------------------------------------------------- PII
 
-  /** Rate limited per staff member: a reveal loop is how a console becomes a data leak. */
+  /** Every reveal is audited field by field. */
   @Post(':id/reveal')
   @RequirePermissions('pii.reveal')
-  @Throttle({ pii: { limit: 20, ttl: 60_000 } })
   reveal(
     @CurrentStaff() staff: StaffPrincipal,
     @Param('id') id: string,

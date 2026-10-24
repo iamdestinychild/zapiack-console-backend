@@ -76,6 +76,8 @@ export interface AdminConfig {
     exportTtlHours: number;
     requestLogRetentionDays: number;
     liveMapEventsPerSecond: number;
+    /** Seconds between live-map polls; polling pauses entirely with no viewers. */
+    liveMapPollSeconds: number;
     reconciliationVariancePct: number;
     rollupLagAlertMinutes: number;
   };
@@ -211,10 +213,11 @@ export default (): AdminConfig => ({
     exportTtlHours: int(process.env.EXPORT_TTL_HOURS, 24),
     requestLogRetentionDays: int(process.env.REQUEST_LOG_RETENTION_DAYS, 90),
     liveMapEventsPerSecond: int(process.env.LIVE_MAP_EPS, 50),
+    liveMapPollSeconds: int(process.env.LIVE_MAP_POLL_SECONDS, 10),
     reconciliationVariancePct: Number(
       process.env.RECONCILIATION_VARIANCE_PCT ?? 1,
     ),
-    rollupLagAlertMinutes: int(process.env.ROLLUP_LAG_ALERT_MINUTES, 15),
+    rollupLagAlertMinutes: int(process.env.ROLLUP_LAG_ALERT_MINUTES, 45),
   },
 
   apiCore: {

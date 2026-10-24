@@ -153,7 +153,7 @@ export class DiagnosticsService {
     const rolledEvents = n(usage._sum.attempted);
     if (sourceEvents !== rolledEvents)
       findings.push(
-        `Today's usage rollup shows ${rolledEvents} events but the product has ${sourceEvents}. Rollups catch up within 5 minutes of the service being awake.`,
+        `Today's usage rollup shows ${rolledEvents} events but the product has ${sourceEvents}. Rollups catch up within 15 minutes of the service being awake.`,
       );
     const rolledRequests = n(requests._sum.total);
     if (sourceRequests !== rolledRequests)

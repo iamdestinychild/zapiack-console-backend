@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { TtlCache, cacheKey } from '../../common/cache/ttl-cache';
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { lagosDateOnly, resolveRange } from '../../common/time/lagos';
@@ -23,8 +24,16 @@ export class GeoService {
     private readonly zapiack: ZapiackPrismaService,
   ) {}
 
+  private readonly cache = new TtlCache<unknown>(30_000);
+
   /** Aggregated API request origins. Reads rollups, not the raw log. */
-  async requests(dto: GeoRequestsDto) {
+  requests(dto: GeoRequestsDto) {
+    return this.cache.get(`requests:${cacheKey(dto)}`, () =>
+      this.loadRequests(dto),
+    ) as ReturnType<GeoService['loadRequests']>;
+  }
+
+  private async loadRequests(dto: GeoRequestsDto) {
     const { start, end } = resolveRange(dto.from, dto.to, 7);
     const groupBy = dto.groupBy ?? 'country';
 
@@ -114,7 +123,15 @@ export class GeoService {
    * The last few minutes of requests with coordinates, so the map is populated the
    * moment it opens. The live stream only carries what arrives afterwards.
    */
-  async recentLive(minutes = 5, limit = 500) {
+  recentLive(minutes = 5, limit = 500) {
+    // Every map that opens asks for this; half a minute of staleness is what the
+    // stream corrects within moments anyway.
+    return this.cache.get(`recent:${minutes}:${limit}`, () =>
+      this.loadRecentLive(minutes, limit),
+    ) as ReturnType<GeoService['loadRecentLive']>;
+  }
+
+  private async loadRecentLive(minutes: number, limit: number) {
     const since = new Date(Date.now() - minutes * 60_000);
     const rows = await this.zapiack.read.apiActivityLog.findMany({
       where: { createdAt: { gt: since } },
@@ -208,7 +225,13 @@ export class GeoService {
    * Where messages are going, by country and network. Concentration here, especially
    * to expensive networks, is what SMS pumping looks like before the invoice arrives.
    */
-  async destinations(dto: GeoRequestsDto) {
+  destinations(dto: GeoRequestsDto) {
+    return this.cache.get(`destinations:${cacheKey(dto)}`, () =>
+      this.loadDestinations(dto),
+    ) as ReturnType<GeoService['loadDestinations']>;
+  }
+
+  private async loadDestinations(dto: GeoRequestsDto) {
     const { start, end } = resolveRange(dto.from, dto.to, 30);
 
     const rows = await this.admin.destinationRollup.groupBy({

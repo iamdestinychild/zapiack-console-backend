@@ -1,5 +1,4 @@
 import { Body, Controller, Get, Param, Post, Query, Res } from '@nestjs/common';
-import { Throttle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import {
   CurrentStaff,
@@ -83,10 +82,9 @@ export class SenderIdsController {
 
   // ---------------------------------------------------------------- documents
 
-  /** Rate limited per staff member: bulk document pulls are exactly what to notice. */
+  /** Bulk document pulls are exactly what to notice, so each one is audited. */
   @Get(':id/documents/:docId/url')
   @RequirePermissions('senderid.documents.download')
-  @Throttle({ documents: { limit: 60, ttl: 60_000 } })
   documentUrl(
     @CurrentStaff() staff: StaffPrincipal,
     @Param('id') id: string,
@@ -103,7 +101,6 @@ export class SenderIdsController {
 
   @Get(':id/documents.zip')
   @RequirePermissions('senderid.documents.download')
-  @Throttle({ documents: { limit: 10, ttl: 60_000 } })
   documentsZip(
     @CurrentStaff() staff: StaffPrincipal,
     @Param('id') id: string,

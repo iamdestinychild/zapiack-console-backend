@@ -115,7 +115,7 @@ one in a later release.
 ## Operating it
 
 **Is it healthy?** `GET /health/ready` reports each dependency separately.
-`GET /admin/v1/overview/health` reports rollup lag per job; past 15 minutes the schedulers
+`GET /admin/v1/overview/health` reports rollup lag per job; past 45 minutes the schedulers
 are not running, which on the free plan usually just means it was asleep.
 
 **Logs** are in the Render dashboard, structured, with a `requestId` that matches what the

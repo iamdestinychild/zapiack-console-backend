@@ -1,8 +1,7 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
-import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ConfigModule } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 
 import configuration, { type AdminConfig } from './common/config/configuration';
 import { runsBackgroundWork } from './common/config/role';
@@ -62,23 +61,6 @@ import { JobsModule } from './modules/jobs/jobs.module';
         prefix: `${redis.prefix}bull`,
       }),
     }),
-    /**
-     * Named throttles for the routes that matter: login, PII reveal, exports and
-     * document URLs. `default` covers everything else.
-     */
-    ThrottlerModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: () => ({
-        throttlers: [
-          { name: 'default', limit: 300, ttl: 60_000 },
-          { name: 'login', limit: 10, ttl: 60_000 },
-          { name: 'pii', limit: 20, ttl: 60_000 },
-          { name: 'exports', limit: 10, ttl: 60_000 },
-          { name: 'documents', limit: 60, ttl: 60_000 },
-        ],
-      }),
-    }),
-
     PrismaModule,
     RedisModule,
     SseModule,
@@ -112,7 +94,6 @@ import { JobsModule } from './modules/jobs/jobs.module';
   providers: [
     // Order matters: the session must resolve before permissions are checked, and the
     // network restriction applies to an already-identified staff member.
-    { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: SessionGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
     { provide: APP_GUARD, useClass: IpAllowlistGuard },

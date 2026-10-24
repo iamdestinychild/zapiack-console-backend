@@ -85,7 +85,7 @@ their notification bell updates live. Rejecting tells them why, in the same mome
 | 409 | already approved / already rejected; **or the customer changed it since the screen loaded** (for example they resubmitted). Refetch and review again |
 
 **Resubmission.** When a customer edits a rejected application and submits it again, it returns to
-`PENDING_REVIEW` within five minutes with a fresh 24-hour clock, nobody assigned and a reset
+`PENDING_REVIEW` within ten minutes with a fresh 24-hour clock, nobody assigned and a reset
 checklist, and the history records "Resubmitted by the customer".
 
 ## Assigning

@@ -33,7 +33,7 @@ interface UsageBucket {
  *
  * Every job is idempotent: it upserts a (date, hour, channel, accountId, country,
  * provider) bucket, so re-running a window never double-counts. That is what makes it
- * safe to run the current day every five minutes and finalise it again at night.
+ * safe to run the current day every fifteen minutes and finalise it again at night.
  */
 @Injectable()
 export class RollupsService {

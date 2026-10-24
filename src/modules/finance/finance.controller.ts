@@ -1,5 +1,4 @@
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
-import { Throttle } from '@nestjs/throttler';
 import {
   CurrentStaff,
   Idempotent,
@@ -56,7 +55,6 @@ export class FinanceController {
 
   @Post('exports')
   @RequirePermissions('finance.export')
-  @Throttle({ exports: { limit: 10, ttl: 60_000 } })
   @Idempotent()
   createExport(
     @CurrentStaff() staff: StaffPrincipal,
@@ -73,7 +71,6 @@ export class FinanceController {
 
   @Get('exports/:id/download')
   @RequirePermissions('finance.export')
-  @Throttle({ exports: { limit: 20, ttl: 60_000 } })
   download(@CurrentStaff() staff: StaffPrincipal, @Param('id') id: string) {
     return this.exports.download(staff, id);
   }

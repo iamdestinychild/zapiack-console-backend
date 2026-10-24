@@ -9,7 +9,6 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Throttle } from '@nestjs/throttler';
 import type { CookieOptions, Request, Response } from 'express';
 import { cookieScope } from '../../common/auth/cookie-scope';
 import { cookieValues } from '../../common/auth/session-cookie';
@@ -41,9 +40,8 @@ export class AuthController {
     this.cfg = config.get('admin', { infer: true });
   }
 
-  /** Rate limited hard: this is the one unauthenticated write on the service. */
+  /** The one unauthenticated write on the service. */
   @Public()
-  @Throttle({ login: { limit: 10, ttl: 60_000 } })
   @Post('login')
   @HttpCode(200)
   async login(
@@ -66,7 +64,6 @@ export class AuthController {
   }
 
   @Public()
-  @Throttle({ login: { limit: 10, ttl: 60_000 } })
   @Post('2fa/verify')
   @HttpCode(200)
   async verify(
@@ -112,7 +109,6 @@ export class AuthController {
   }
 
   @Public()
-  @Throttle({ login: { limit: 5, ttl: 60_000 } })
   @Post('invites/accept')
   @HttpCode(201)
   acceptInvite(@Body() dto: AcceptInviteDto, @Req() req: Request) {

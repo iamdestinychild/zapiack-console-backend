@@ -12,8 +12,10 @@ import { geocode } from '../../common/geo/geocode';
 import type { AdminConfig } from '../../common/config/configuration';
 import { everyNth, traced } from '../../common/diagnostics/memory-trace';
 
-/** How often the tail looks for new rows. The map's "under 5s" target allows this. */
-const POLL_MS = 3_000;
+/** Default gap between polls; LIVE_MAP_POLL_SECONDS overrides it. */
+const DEFAULT_POLL_SECONDS = 10;
+/** The channel the live map listens on. */
+const LIVE_CHANNEL = 'geo:live';
 /** Ceiling per poll, so a traffic burst cannot pull an unbounded page. */
 const BATCH = 200;
 /** With MEMORY_TRACE on, one poll in this many is measured (about once a minute). */
@@ -51,20 +53,21 @@ export class ActivityTailWorker implements OnModuleInit, OnModuleDestroy {
   /** Rows at or before this point have already been published. */
   private watermark = new Date();
   private readonly perSecond: number;
+  private readonly pollMs: number;
 
   constructor(
     private readonly zapiack: ZapiackPrismaService,
     private readonly sse: SseService,
     config: ConfigService<{ admin: AdminConfig }, true>,
   ) {
-    this.perSecond = config.get('admin', {
-      infer: true,
-    }).limits.liveMapEventsPerSecond;
+    const { limits } = config.get('admin', { infer: true });
+    this.perSecond = limits.liveMapEventsPerSecond;
+    this.pollMs = (limits.liveMapPollSeconds ?? DEFAULT_POLL_SECONDS) * 1000;
   }
 
   onModuleInit() {
     this.running = true;
-    this.timer = setInterval(() => void this.tick(), POLL_MS);
+    this.timer = setInterval(() => void this.tick(), this.pollMs);
     this.logger.log('Tailing api_activity_logs for the live map');
   }
 
@@ -79,7 +82,7 @@ export class ActivityTailWorker implements OnModuleInit, OnModuleDestroy {
       if (now - this.lastSkipWarn >= SKIP_WARN_MS) {
         this.lastSkipWarn = now;
         this.logger.warn(
-          `Activity tail is slower than ${POLL_MS}ms; skipped ${this.skipped} poll(s) so far`,
+          `Activity tail is slower than ${this.pollMs}ms; skipped ${this.skipped} poll(s) so far`,
         );
       }
       return;
@@ -87,6 +90,13 @@ export class ActivityTailWorker implements OnModuleInit, OnModuleDestroy {
 
     this.inFlight = true;
     try {
+      // Nobody has the map open: skip the query entirely. The watermark moves to now so
+      // the first poll after a viewer arrives does not replay the idle period; the map
+      // fills itself from /geo/live/recent when it opens.
+      if (!(await this.sse.hasViewers(LIVE_CHANNEL))) {
+        this.watermark = new Date();
+        return;
+      }
       if (everyNth(this.sampler, TRACE_EVERY)) {
         await traced('geo:activity-tail', () => this.poll());
       } else {
@@ -123,11 +133,11 @@ export class ActivityTailWorker implements OnModuleInit, OnModuleDestroy {
       this.watermark = rows[rows.length - 1].createdAt;
 
       // Sampling protects the viewer, not the data: the log keeps every row.
-      const budget = Math.floor((this.perSecond * POLL_MS) / 1000);
+      const budget = Math.floor((this.perSecond * this.pollMs) / 1000);
       const sampled = rows.length > budget ? evenSample(rows, budget) : rows;
 
       await this.sse.publish(
-        'geo:live',
+        LIVE_CHANNEL,
         'request',
         sampled.flatMap((row) => {
           // The log has no coordinates; a dot with nowhere to go is dropped, not

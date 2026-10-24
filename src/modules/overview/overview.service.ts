@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { TtlCache, cacheKey } from '../../common/cache/ttl-cache';
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import {
   eachLagosDay,
@@ -13,9 +14,34 @@ const D = (v: unknown) => Number(v ?? 0);
 /** The landing screen: the handful of numbers that say whether today is normal. */
 @Injectable()
 export class OverviewService {
+  // Rollups refresh every 15 minutes, so a minute of staleness is invisible and a
+  // landing screen opened by several staff costs one set of queries.
+  private readonly kpiCache = new TtlCache<unknown>(60_000);
+  private readonly seriesCache = new TtlCache<unknown>(60_000);
+  private readonly healthCache = new TtlCache<unknown>(30_000);
+
   constructor(private readonly admin: AdminPrismaService) {}
 
-  async kpis(dto: DateRangeDto) {
+  kpis(dto: DateRangeDto) {
+    return this.kpiCache.get(cacheKey(dto), () =>
+      this.loadKpis(dto),
+    ) as ReturnType<OverviewService['loadKpis']>;
+  }
+
+  timeseries(dto: DateRangeDto) {
+    return this.seriesCache.get(cacheKey(dto), () =>
+      this.loadTimeseries(dto),
+    ) as ReturnType<OverviewService['loadTimeseries']>;
+  }
+
+  /** Freshness and queue health, so staff can tell "no data" from "stale data". */
+  health() {
+    return this.healthCache.get('health', () =>
+      this.loadHealth(),
+    ) as ReturnType<OverviewService['loadHealth']>;
+  }
+
+  private async loadKpis(dto: DateRangeDto) {
     const { start, end } = resolveRange(dto.from, dto.to, 30);
     const spanDays = Math.max(
       1,
@@ -138,7 +164,7 @@ export class OverviewService {
   }
 
   /** Daily series for the overview charts, with empty days filled in. */
-  async timeseries(dto: DateRangeDto) {
+  private async loadTimeseries(dto: DateRangeDto) {
     const { start, end } = resolveRange(dto.from, dto.to, 30);
 
     const [usage, requests] = await Promise.all([
@@ -192,8 +218,7 @@ export class OverviewService {
     };
   }
 
-  /** Freshness and queue health, so staff can tell "no data" from "stale data". */
-  async health() {
+  private async loadHealth() {
     // `history.backfill` is a one-time marker, not a job that runs on a schedule, so its
     // age means nothing here and would read as a stale job.
     const watermarks = await this.admin.rollupWatermark.findMany({

@@ -28,8 +28,8 @@ export class SchedulerService implements OnModuleInit {
     await this.maintenance.add(JOBS.partitions, {}, DEFAULT_JOB_OPTIONS);
   }
 
-  /** Rollup freshness target for today is 5 minutes. */
-  @Cron('*/5 * * * *')
+  /** Rollup freshness target for today is 15 minutes. */
+  @Cron('*/15 * * * *')
   async rollCurrentDay() {
     const now = DateTime.now().setZone(LAGOS);
     await this.rollups.add(
@@ -77,12 +77,12 @@ export class SchedulerService implements OnModuleInit {
     );
   }
 
-  @Cron(CronExpression.EVERY_10_MINUTES)
+  @Cron(CronExpression.EVERY_30_MINUTES)
   async providerHealth() {
     await this.rollups.add(JOBS.providerHealth, {}, DEFAULT_JOB_OPTIONS);
   }
 
-  @Cron(CronExpression.EVERY_30_MINUTES)
+  @Cron(CronExpression.EVERY_HOUR)
   async riskScan() {
     await this.rollups.add(JOBS.riskScan, {}, DEFAULT_JOB_OPTIONS);
   }
@@ -92,13 +92,13 @@ export class SchedulerService implements OnModuleInit {
    * writes them without telling this service, so the queue is only ever as complete as
    * the last sync.
    */
-  @Cron(CronExpression.EVERY_5_MINUTES)
+  @Cron(CronExpression.EVERY_10_MINUTES)
   async senderIdSync() {
     await this.maintenance.add(JOBS.senderIdSync, {}, DEFAULT_JOB_OPTIONS);
   }
 
   /** Sender ID SLA timers; breaches become staff notifications. */
-  @Cron(CronExpression.EVERY_10_MINUTES)
+  @Cron(CronExpression.EVERY_30_MINUTES)
   async slaSweep() {
     await this.maintenance.add(JOBS.slaSweep, {}, DEFAULT_JOB_OPTIONS);
   }
@@ -107,7 +107,7 @@ export class SchedulerService implements OnModuleInit {
    * Re-queues events that were persisted but never processed, which is the whole
    * point of persisting them first.
    */
-  @Cron(CronExpression.EVERY_5_MINUTES)
+  @Cron(CronExpression.EVERY_10_MINUTES)
   async eventSweep() {
     await this.events.add(JOBS.eventSweep, {}, DEFAULT_JOB_OPTIONS);
   }

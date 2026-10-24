@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { TtlCache } from '../../common/cache/ttl-cache';
 import {
   ProviderStatus,
   type ProviderHealthSample,
@@ -131,8 +132,17 @@ export class ProviderHealthService {
     return { windowStart, windowEnd, providers: samples.length };
   }
 
+  /** Samples are taken every 30 minutes, so a minute-old read is current. */
+  private readonly currentCache = new TtlCache<unknown>(60_000);
+
   /** Current state per provider, newest sample first. */
-  async current() {
+  current() {
+    return this.currentCache.get('current', () =>
+      this.loadCurrent(),
+    ) as ReturnType<ProviderHealthService['loadCurrent']>;
+  }
+
+  private async loadCurrent() {
     const since = new Date(Date.now() - 6 * 60 * 60_000);
     const samples = await this.admin.providerHealthSample.findMany({
       where: { windowStart: { gte: since } },

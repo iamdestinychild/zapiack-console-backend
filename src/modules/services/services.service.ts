@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { TtlCache, cacheKey } from '../../common/cache/ttl-cache';
 import { Prisma } from '../../generated/zapiack/client';
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
@@ -20,8 +21,24 @@ export class ServicesService {
     private readonly zapiack: ZapiackPrismaService,
   ) {}
 
+  private readonly cache = new TtlCache<unknown>(60_000);
+
   /** The service index: one card per product line, live or not yet launched. */
-  async list(dto: DateRangeDto) {
+  list(dto: DateRangeDto) {
+    return this.cache.get(`list:${cacheKey(dto)}`, () =>
+      this.loadList(dto),
+    ) as ReturnType<ServicesService['loadList']>;
+  }
+
+  async metrics(serviceKey: string, dto: DateRangeDto) {
+    if (!SERVICE_BY_KEY.has(serviceKey))
+      return this.loadMetrics(serviceKey, dto);
+    return this.cache.get(`metrics:${serviceKey}:${cacheKey(dto)}`, () =>
+      this.loadMetrics(serviceKey, dto),
+    ) as ReturnType<ServicesService['loadMetrics']>;
+  }
+
+  private async loadList(dto: DateRangeDto) {
     const { start, end } = resolveRange(dto.from, dto.to, 7);
 
     const rollups = await this.admin.usageRollup.groupBy({
@@ -71,7 +88,7 @@ export class ServicesService {
     };
   }
 
-  async metrics(serviceKey: string, dto: DateRangeDto) {
+  private async loadMetrics(serviceKey: string, dto: DateRangeDto) {
     const service = SERVICE_BY_KEY.get(serviceKey);
     if (!service) throw new NotFoundException(`Unknown service ${serviceKey}`);
 
