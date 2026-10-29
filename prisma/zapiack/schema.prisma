@@ -530,7 +530,9 @@ enum CampaignStatuses {
   DRAFT
   SCHEDULED
   PROCESSING
+  PAUSED
   COMPLETED
+  CANCELLED
   FAILED
 }
 
@@ -800,6 +802,7 @@ enum BillingType {
 enum ChannelType {
   EMAIL
   SMS
+  WHATSAPP
 }
 
 model AccountBilling {
