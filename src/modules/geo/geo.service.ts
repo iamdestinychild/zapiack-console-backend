@@ -5,6 +5,7 @@ import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service
 import { lagosDateOnly, resolveRange } from '../../common/time/lagos';
 import { maskIp } from '../../common/http/masking';
 import { geocode } from '../../common/geo/geocode';
+import { CustomerNames } from './customer-names';
 import type { GeoRequestsDto, RequestLogDto } from './dto/geo.dto';
 
 /**
@@ -22,6 +23,7 @@ export class GeoService {
   constructor(
     private readonly admin: AdminPrismaService,
     private readonly zapiack: ZapiackPrismaService,
+    private readonly customers: CustomerNames,
   ) {}
 
   private readonly cache = new TtlCache<unknown>(30_000);
@@ -149,6 +151,9 @@ export class GeoService {
         projectId: true,
       },
     });
+    const customers = await this.customers.resolve(
+      rows.map((row) => row.projectId),
+    );
     return {
       since,
       data: rows.flatMap((row) => {
@@ -162,6 +167,9 @@ export class GeoService {
             statusCode: row.statusCode,
             service: row.service,
             projectId: row.projectId,
+            customer: row.projectId
+              ? (customers.get(row.projectId) ?? null)
+              : null,
             country: row.countryCode,
             region: row.region,
             city: row.city,

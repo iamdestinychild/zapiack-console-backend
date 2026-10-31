@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { SseService } from '../../common/sse/sse.service';
+import { CustomerNames } from './customer-names';
 import { maskIp } from '../../common/http/masking';
 import { geocode } from '../../common/geo/geocode';
 import type { AdminConfig } from '../../common/config/configuration';
@@ -58,6 +59,7 @@ export class ActivityTailWorker implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly zapiack: ZapiackPrismaService,
     private readonly sse: SseService,
+    private readonly customers: CustomerNames,
     config: ConfigService<{ admin: AdminConfig }, true>,
   ) {
     const { limits } = config.get('admin', { infer: true });
@@ -128,6 +130,10 @@ export class ActivityTailWorker implements OnModuleInit, OnModuleDestroy {
       });
       if (!rows.length) return;
 
+      const customers = await this.customers.resolve(
+        rows.map((row) => row.projectId),
+      );
+
       // Advance past everything read, including rows the sampling drops, so the
       // watermark never rewinds and nothing is replayed.
       this.watermark = rows[rows.length - 1].createdAt;
@@ -155,6 +161,9 @@ export class ActivityTailWorker implements OnModuleInit, OnModuleDestroy {
               statusCode: row.statusCode,
               service: row.service,
               projectId: row.projectId,
+              customer: row.projectId
+                ? (customers.get(row.projectId) ?? null)
+                : null,
               country: row.countryCode,
               region: row.region,
               city: row.city,
