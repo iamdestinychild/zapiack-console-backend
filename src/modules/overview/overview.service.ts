@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { TtlCache, cacheKey } from '../../common/cache/ttl-cache';
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
+import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import {
   eachLagosDay,
   lagosDateOnly,
@@ -20,7 +21,47 @@ export class OverviewService {
   private readonly seriesCache = new TtlCache<unknown>(60_000);
   private readonly healthCache = new TtlCache<unknown>(30_000);
 
-  constructor(private readonly admin: AdminPrismaService) {}
+  constructor(
+    private readonly admin: AdminPrismaService,
+    private readonly zapiack: ZapiackPrismaService,
+  ) {}
+
+  /**
+   * Customer totals and churn, which the rollups do not carry. One round trip; paying
+   * means an active subscription on a plan that costs something.
+   */
+  private async customerCounts(start: Date, end: Date) {
+    const [row] = await this.zapiack.read.$queryRaw<
+      {
+        total: bigint;
+        paying: bigint;
+        payingAtStart: bigint;
+        churned: bigint;
+      }[]
+    >`
+      SELECT
+        (SELECT COUNT(*) FROM "accounts"
+          WHERE "accountStatus" NOT IN ('CANCELED', 'BANNED'))::bigint AS "total",
+        (SELECT COUNT(DISTINCT s."accountId") FROM "subscriptions" s
+           JOIN "plans" p ON p."id" = s."planId"
+          WHERE s."status" = 'ACTIVE' AND p."isFree" = false AND p."basePrice" > 0)::bigint AS "paying",
+        (SELECT COUNT(DISTINCT s."accountId") FROM "subscriptions" s
+           JOIN "plans" p ON p."id" = s."planId"
+          WHERE p."isFree" = false AND p."basePrice" > 0
+            AND s."createdAt" < ${start}
+            AND (s."cancelledAt" IS NULL OR s."cancelledAt" >= ${start}))::bigint AS "payingAtStart",
+        (SELECT COUNT(DISTINCT s."accountId") FROM "subscriptions" s
+           JOIN "plans" p ON p."id" = s."planId"
+          WHERE p."isFree" = false AND p."basePrice" > 0
+            AND s."cancelledAt" >= ${start} AND s."cancelledAt" <= ${end})::bigint AS "churned"
+    `;
+    return {
+      total: Number(row?.total ?? 0),
+      paying: Number(row?.paying ?? 0),
+      payingAtStart: Number(row?.payingAtStart ?? 0),
+      churned: Number(row?.churned ?? 0),
+    };
+  }
 
   kpis(dto: DateRangeDto) {
     return this.kpiCache.get(cacheKey(dto), () =>
@@ -58,6 +99,7 @@ export class OverviewService {
       requests,
       openFlags,
       senderQueue,
+      customers,
     ] = await Promise.all([
       this.admin.usageRollup.aggregate({
         where: {
@@ -103,6 +145,7 @@ export class OverviewService {
       this.admin.senderIdReview.count({
         where: { decidedAt: null, status: { in: ['SUBMITTED', 'IN_REVIEW'] } },
       }),
+      this.customerCounts(start, end),
     ]);
 
     const credits = D(usage._sum.revenueNgn);
@@ -154,6 +197,11 @@ export class OverviewService {
         active: accountTotals._max.activeAccounts ?? 0,
         new: accountTotals._sum.newAccounts ?? 0,
         activated: accountTotals._sum.activatedAccounts ?? 0,
+        total: customers.total,
+        paying: customers.paying,
+        // Paying customers at the start of the range who cancelled within it.
+        payingAtStart: customers.payingAtStart,
+        churned: customers.churned,
       },
       attention: {
         openRiskFlags: openFlags,
@@ -167,7 +215,7 @@ export class OverviewService {
   private async loadTimeseries(dto: DateRangeDto) {
     const { start, end } = resolveRange(dto.from, dto.to, 30);
 
-    const [usage, requests] = await Promise.all([
+    const [usage, requests, snapshots] = await Promise.all([
       this.admin.usageRollup.groupBy({
         by: ['date'],
         where: {
@@ -186,8 +234,16 @@ export class OverviewService {
         where: { date: { gte: lagosDateOnly(start), lte: lagosDateOnly(end) } },
         _sum: { total: true, serverErrors: true },
       }),
+      // Daily sign-ups and MRR, for the dashboard's sparklines.
+      this.admin.financeSnapshot.findMany({
+        where: { date: { gte: lagosDateOnly(start), lte: lagosDateOnly(end) } },
+        select: { date: true, newAccounts: true, mrrNgn: true },
+      }),
     ]);
 
+    const snapshotByDate = new Map(
+      snapshots.map((s) => [s.date.toISOString(), s]),
+    );
     const usageByDate = new Map(usage.map((u) => [u.date.toISOString(), u]));
     const requestsByDate = new Map(
       requests.map((r) => [r.date.toISOString(), r]),
@@ -198,6 +254,7 @@ export class OverviewService {
       series: eachLagosDay(start, end).map((date) => {
         const u = usageByDate.get(date.toISOString());
         const r = requestsByDate.get(date.toISOString());
+        const f = snapshotByDate.get(date.toISOString());
         const credits = D(u?._sum.revenueNgn);
         const attempted = Number(u?._sum.attempted ?? 0);
         const total = Number(r?._sum.total ?? 0);
@@ -213,6 +270,8 @@ export class OverviewService {
           apiErrorRate: total
             ? round(Number(r?._sum.serverErrors ?? 0) / total, 4)
             : null,
+          newAccounts: f?.newAccounts ?? 0,
+          mrrNgn: round(D(f?.mrrNgn)),
         };
       }),
     };
