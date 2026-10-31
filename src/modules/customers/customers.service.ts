@@ -12,7 +12,9 @@ import {
 } from '../../common/http/pagination';
 import { lagosDateOnly, resolveRange } from '../../common/time/lagos';
 import type { StaffPrincipal } from '../../common/auth/staff-principal';
+import { TtlCache } from '../../common/cache/ttl-cache';
 import type {
+  CustomersTableDto,
   CustomerUsageDto,
   RevealPiiDto,
   SearchCustomersDto,
@@ -38,6 +40,125 @@ export class CustomersService {
     private readonly admin: AdminPrismaService,
     private readonly audit: AuditService,
   ) {}
+
+  /** Short-lived: the dashboard table is read far more often than it changes. */
+  private readonly tableCache = new TtlCache<unknown>(30_000);
+
+  /**
+   * The dashboard's customer table: numbered pages with a total, the plan, the
+   * channels the customer bills on, and the MRR their plan contributes.
+   *
+   * Searches the same identifiers as the main list, apart from API key prefixes, which
+   * need a second query and are not worth it for a glance table. Emails stay masked.
+   */
+  table(query: CustomersTableDto) {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 6;
+    const q = query.q?.trim() ?? '';
+    const key = JSON.stringify([page, pageSize, q, query.status ?? null]);
+    return this.tableCache.get(key, () =>
+      this.loadTable(page, pageSize, q, query.status),
+    ) as ReturnType<CustomersService['loadTable']>;
+  }
+
+  private async loadTable(
+    page: number,
+    pageSize: number,
+    q: string,
+    status: CustomersTableDto['status'],
+  ) {
+    const conditions: Prisma.AccountsWhereInput[] = [];
+    if (status) conditions.push({ accountStatus: status });
+    if (q) {
+      conditions.push({
+        OR: [
+          { id: q },
+          { owner: { email: { contains: q, mode: 'insensitive' } } },
+          { owner: { displayName: { contains: q, mode: 'insensitive' } } },
+          {
+            senderIdApplications: {
+              some: { businessName: { contains: q, mode: 'insensitive' } },
+            },
+          },
+        ],
+      });
+    }
+    const where: Prisma.AccountsWhereInput = conditions.length
+      ? { AND: conditions }
+      : {};
+
+    const [total, accounts] = await Promise.all([
+      this.zapiack.read.accounts.count({ where }),
+      this.zapiack.read.accounts.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        select: {
+          id: true,
+          accountStatus: true,
+          createdAt: true,
+          owner: { select: { email: true, displayName: true } },
+          subscriptions: {
+            where: { status: 'ACTIVE' },
+            take: 1,
+            select: {
+              isTrial: true,
+              plan: {
+                select: { name: true, basePrice: true, billingInterval: true },
+              },
+            },
+          },
+          accountBillings: { select: { channel: true } },
+          senderIdApplications: {
+            select: { businessName: true },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+          },
+        },
+      }),
+    ]);
+
+    const flags = await this.admin.riskFlag.groupBy({
+      by: ['accountId'],
+      where: { accountId: { in: accounts.map((a) => a.id) }, resolvedAt: null },
+      _count: { _all: true },
+    });
+    const flagCount = new Map(flags.map((f) => [f.accountId, f._count._all]));
+
+    return {
+      data: accounts.map((account) => {
+        const subscription = account.subscriptions[0];
+        const plan = subscription?.plan;
+        // Annual plans are divided by 12, as the finance snapshot does, so MRR means
+        // the same thing on every row.
+        const mrr = plan
+          ? plan.billingInterval === 'YEARLY'
+            ? plan.basePrice.div(12)
+            : plan.basePrice
+          : null;
+        return {
+          id: account.id,
+          name:
+            account.senderIdApplications[0]?.businessName ??
+            account.owner.displayName ??
+            maskEmail(account.owner.email),
+          email: maskEmail(account.owner.email),
+          plan: plan?.name ?? null,
+          channels: account.accountBillings.map((b) => b.channel),
+          mrrNgn: (mrr ?? 0).toString(),
+          status: account.accountStatus,
+          isTrial: subscription?.isTrial ?? false,
+          openRiskFlags: flagCount.get(account.id) ?? 0,
+          createdAt: account.createdAt,
+        };
+      }),
+      page,
+      pageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    };
+  }
 
   /**
    * One search box over the identifiers that actually exist: account id, owner email

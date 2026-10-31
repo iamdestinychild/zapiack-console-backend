@@ -28,6 +28,7 @@ import {
   ChangePlanDto,
   CreateNoteDto,
   CreateRiskFlagDto,
+  CustomersTableDto,
   CustomerUsageDto,
   LedgerQueryDto,
   RevealPiiDto,
@@ -49,6 +50,13 @@ export class CustomersController {
   @RequirePermissions('customers.read')
   search(@Query() query: SearchCustomersDto) {
     return this.customers.search(query);
+  }
+
+  /** The dashboard's table. Declared before `:id` so `table` is not read as an id. */
+  @Get('table')
+  @RequirePermissions('customers.read')
+  table(@Query() query: CustomersTableDto) {
+    return this.customers.table(query);
   }
 
   @Get(':id')

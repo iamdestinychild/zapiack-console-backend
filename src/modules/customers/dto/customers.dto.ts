@@ -1,3 +1,4 @@
+import { Type } from 'class-transformer';
 import {
   IsArray,
   IsBoolean,
@@ -5,8 +6,11 @@ import {
   IsIn,
   IsNumberString,
   IsOptional,
+  IsInt,
   IsString,
+  Max,
   MaxLength,
+  Min,
   MinLength,
 } from 'class-validator';
 import { RiskFlagType, RiskSeverity } from '../../../generated/admin/client';
@@ -41,6 +45,32 @@ export class SearchCustomersDto extends CursorPageDto {
   @BooleanQuery()
   @IsBoolean()
   flaggedOnly?: boolean;
+}
+
+/** The dashboard's customer table: numbered pages, so it pages by offset, not cursor. */
+export class CustomersTableDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(10_000)
+  page?: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  pageSize?: number = 6;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  q?: string;
+
+  @IsOptional()
+  @IsEnum(AccountStatus)
+  status?: AccountStatus;
 }
 
 export class CustomerUsageDto extends DateRangePageDto {
