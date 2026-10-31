@@ -37,6 +37,7 @@ function build() {
   const worker = new ActivityTailWorker(
     zapiack as never,
     sse as never,
+    { resolve: () => Promise.resolve(new Map()) } as never,
     config as never,
   );
   (worker as unknown as { running: boolean }).running = true;

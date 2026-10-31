@@ -6,6 +6,7 @@ import { EventsProcessor } from '../events/events.processor';
 import { FinanceModule } from '../finance/finance.module';
 import { InboxModule } from '../inbox/inbox.module';
 import { ActivityTailWorker } from '../geo/activity-tail.worker';
+import { GeoModule } from '../geo/geo.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { CampaignProcessor } from '../notifications/campaign.processor';
 import { RiskModule } from '../risk/risk.module';
@@ -45,6 +46,8 @@ import { QUEUES } from './queues';
     EventsModule,
     // Processors raise staff alerts: SLA breaches, outages, reconciliation variances.
     InboxModule,
+    // The live map's tail labels each request with its customer.
+    GeoModule,
   ],
   providers: [
     SchedulerService,
