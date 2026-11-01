@@ -52,6 +52,13 @@ export class CustomersController {
     return this.customers.search(query);
   }
 
+  /** Totals for the list's stats strip and tab counts. */
+  @Get('summary')
+  @RequirePermissions('customers.read')
+  summary() {
+    return this.customers.summary();
+  }
+
   /** The dashboard's table. Declared before `:id` so `table` is not read as an id. */
   @Get('table')
   @RequirePermissions('customers.read')
