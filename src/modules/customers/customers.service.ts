@@ -43,10 +43,11 @@ export class CustomersService {
 
   /** Short-lived: the dashboard table is read far more often than it changes. */
   private readonly tableCache = new TtlCache<unknown>(30_000);
+  private readonly summaryCache = new TtlCache<unknown>(60_000);
 
   /**
-   * The dashboard's customer table: numbered pages with a total, the plan, the
-   * channels the customer bills on, and the MRR their plan contributes.
+   * The customer table: numbered pages with a total, every active plan the account
+   * holds, the wallet, the MRR those plans contribute, and a risk level.
    *
    * Searches the same identifiers as the main list, apart from API key prefixes, which
    * need a second query and are not worth it for a glance table. Emails stay masked.
@@ -55,20 +56,138 @@ export class CustomersService {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 6;
     const q = query.q?.trim() ?? '';
-    const key = JSON.stringify([page, pageSize, q, query.status ?? null]);
+    const key = JSON.stringify([
+      page,
+      pageSize,
+      q,
+      query.status ?? null,
+      query.segment ?? null,
+      query.planId ?? null,
+      query.country ?? null,
+      query.channel ?? null,
+    ]);
     return this.tableCache.get(key, () =>
-      this.loadTable(page, pageSize, q, query.status),
+      this.loadTable(page, pageSize, q, query),
     ) as ReturnType<CustomersService['loadTable']>;
+  }
+
+  /** The list's header: totals the tabs and the stats strip both read. */
+  summary() {
+    return this.summaryCache.get('summary', () =>
+      this.loadSummary(),
+    ) as ReturnType<CustomersService['loadSummary']>;
+  }
+
+  private async loadSummary() {
+    const monthStart = new Date();
+    monthStart.setUTCDate(1);
+    monthStart.setUTCHours(0, 0, 0, 0);
+
+    const [counts, money, flagged] = await Promise.all([
+      this.zapiack.read.$queryRaw<
+        {
+          total: bigint;
+          newThisMonth: bigint;
+          active: bigint;
+          suspended: bigint;
+          paying: bigint;
+          wallets: string | null;
+        }[]
+      >`
+        SELECT
+          COUNT(*)::bigint AS "total",
+          COUNT(*) FILTER (WHERE a."createdAt" >= ${monthStart})::bigint AS "newThisMonth",
+          COUNT(*) FILTER (WHERE a."accountStatus" = 'ACTIVE')::bigint AS "active",
+          COUNT(*) FILTER (WHERE a."accountStatus" = 'SUSPENDED')::bigint AS "suspended",
+          COUNT(*) FILTER (WHERE EXISTS (
+            SELECT 1 FROM "subscriptions" s JOIN "plans" p ON p."id" = s."planId"
+             WHERE s."accountId" = a."id" AND s."status" = 'ACTIVE'
+               AND p."isFree" = false AND p."basePrice" > 0))::bigint AS "paying",
+          COALESCE(SUM(a."creditBalance") FILTER (WHERE a."creditBalance" > 0), 0)::text AS "wallets"
+        FROM "accounts" a
+        WHERE a."accountStatus" NOT IN ('CANCELED', 'BANNED')
+      `,
+      // MRR as the finance snapshot defines it: annual plans count a twelfth.
+      this.zapiack.read.$queryRaw<{ mrr: string | null }[]>`
+        SELECT COALESCE(SUM(CASE WHEN p."billingInterval" = 'YEARLY'
+                                 THEN p."basePrice" / 12 ELSE p."basePrice" END), 0)::text AS "mrr"
+          FROM "subscriptions" s JOIN "plans" p ON p."id" = s."planId"
+         WHERE s."status" = 'ACTIVE' AND p."isFree" = false AND p."basePrice" > 0
+      `,
+      this.admin.riskFlag.findMany({
+        where: { resolvedAt: null },
+        select: { accountId: true },
+        distinct: ['accountId'],
+        take: 5000,
+      }),
+    ]);
+
+    const row = counts[0];
+    const total = Number(row?.total ?? 0);
+    const paying = Number(row?.paying ?? 0);
+    return {
+      total,
+      newThisMonth: Number(row?.newThisMonth ?? 0),
+      active: Number(row?.active ?? 0),
+      suspended: Number(row?.suspended ?? 0),
+      paying,
+      free: Math.max(0, total - paying),
+      flagged: flagged.length,
+      payingPct: total ? Math.round((paying / total) * 1000) / 10 : 0,
+      mrrNgn: money[0]?.mrr ?? '0',
+      prepaidWalletsNgn: row?.wallets ?? '0',
+      walletCount: total,
+    };
   }
 
   private async loadTable(
     page: number,
     pageSize: number,
     q: string,
-    status: CustomersTableDto['status'],
+    query: CustomersTableDto,
   ) {
     const conditions: Prisma.AccountsWhereInput[] = [];
-    if (status) conditions.push({ accountStatus: status });
+    const payingPlan: Prisma.SubscriptionsWhereInput = {
+      status: 'ACTIVE',
+      plan: { isFree: false, basePrice: { gt: 0 } },
+    };
+    if (query.status) conditions.push({ accountStatus: query.status });
+    if (query.country) conditions.push({ countryCode: query.country });
+    if (query.planId) {
+      conditions.push({
+        subscriptions: { some: { planId: query.planId, status: 'ACTIVE' } },
+      });
+    }
+    if (query.channel) {
+      conditions.push({
+        subscriptions: { some: { channel: query.channel, status: 'ACTIVE' } },
+      });
+    }
+    switch (query.segment) {
+      case 'active':
+        conditions.push({ accountStatus: 'ACTIVE' });
+        break;
+      case 'suspended':
+        conditions.push({ accountStatus: 'SUSPENDED' });
+        break;
+      case 'paying':
+        conditions.push({ subscriptions: { some: payingPlan } });
+        break;
+      case 'free':
+        conditions.push({ NOT: { subscriptions: { some: payingPlan } } });
+        break;
+      case 'flagged': {
+        const flags = await this.admin.riskFlag.findMany({
+          where: { resolvedAt: null },
+          select: { accountId: true },
+          distinct: ['accountId'],
+          take: 5000,
+        });
+        conditions.push({ id: { in: flags.map((f) => f.accountId) } });
+        break;
+      }
+      default:
+    }
     if (q) {
       conditions.push({
         OR: [
@@ -78,6 +197,11 @@ export class CustomersService {
           {
             senderIdApplications: {
               some: { businessName: { contains: q, mode: 'insensitive' } },
+            },
+          },
+          {
+            senderIdApplications: {
+              some: { senderId: { equals: q, mode: 'insensitive' } },
             },
           },
         ],
@@ -98,14 +222,23 @@ export class CustomersService {
           id: true,
           accountStatus: true,
           createdAt: true,
-          owner: { select: { email: true, displayName: true } },
+          creditBalance: true,
+          owner: {
+            select: { email: true, displayName: true, lastLoginAt: true },
+          },
           subscriptions: {
             where: { status: 'ACTIVE' },
-            take: 1,
+            orderBy: { createdAt: 'asc' },
             select: {
+              channel: true,
               isTrial: true,
               plan: {
-                select: { name: true, basePrice: true, billingInterval: true },
+                select: {
+                  name: true,
+                  basePrice: true,
+                  billingInterval: true,
+                  isFree: true,
+                },
               },
             },
           },
@@ -119,24 +252,35 @@ export class CustomersService {
       }),
     ]);
 
-    const flags = await this.admin.riskFlag.groupBy({
-      by: ['accountId'],
+    const flags = await this.admin.riskFlag.findMany({
       where: { accountId: { in: accounts.map((a) => a.id) }, resolvedAt: null },
-      _count: { _all: true },
+      select: { accountId: true, severity: true },
     });
-    const flagCount = new Map(flags.map((f) => [f.accountId, f._count._all]));
+    const flagsByAccount = new Map<string, string[]>();
+    for (const f of flags) {
+      flagsByAccount.set(f.accountId, [
+        ...(flagsByAccount.get(f.accountId) ?? []),
+        f.severity,
+      ]);
+    }
 
     return {
       data: accounts.map((account) => {
+        const open = flagsByAccount.get(account.id) ?? [];
         const subscription = account.subscriptions[0];
-        const plan = subscription?.plan;
         // Annual plans are divided by 12, as the finance snapshot does, so MRR means
-        // the same thing on every row.
-        const mrr = plan
-          ? plan.billingInterval === 'YEARLY'
-            ? plan.basePrice.div(12)
-            : plan.basePrice
-          : null;
+        // the same thing on every row. Free plans contribute nothing.
+        const mrr = account.subscriptions.reduce(
+          (sum, s) =>
+            s.plan.isFree
+              ? sum
+              : sum.plus(
+                  s.plan.billingInterval === 'YEARLY'
+                    ? s.plan.basePrice.div(12)
+                    : s.plan.basePrice,
+                ),
+          new Prisma.Decimal(0),
+        );
         return {
           id: account.id,
           name:
@@ -144,12 +288,21 @@ export class CustomersService {
             account.owner.displayName ??
             maskEmail(account.owner.email),
           email: maskEmail(account.owner.email),
-          plan: plan?.name ?? null,
+          plan: subscription?.plan.name ?? null,
+          products: account.subscriptions.map((s) => ({
+            channel: s.channel,
+            plan: s.plan.name,
+            isFree: s.plan.isFree,
+            isTrial: s.isTrial,
+          })),
           channels: account.accountBillings.map((b) => b.channel),
-          mrrNgn: (mrr ?? 0).toString(),
+          mrrNgn: mrr.toString(),
+          walletNgn: account.creditBalance.toString(),
           status: account.accountStatus,
-          isTrial: subscription?.isTrial ?? false,
-          openRiskFlags: flagCount.get(account.id) ?? 0,
+          isTrial: account.subscriptions.some((s) => s.isTrial),
+          openRiskFlags: open.length,
+          risk: riskLevel(open),
+          lastActiveAt: account.owner.lastLoginAt,
           createdAt: account.createdAt,
         };
       }),
@@ -333,46 +486,127 @@ export class CustomersService {
     });
     if (!account) throw new NotFoundException('Account not found');
 
-    const [notes, tags, riskFlags, signIns, usageByChannel, reviews] =
-      await Promise.all([
-        this.admin.customerNote.findMany({
-          where: { accountId },
-          orderBy: [{ pinned: 'desc' }, { createdAt: 'desc' }],
-          take: 20,
-          include: { author: { select: { id: true, name: true } } },
-        }),
-        this.admin.customerTag.findMany({ where: { accountId } }),
-        this.admin.riskFlag.findMany({
-          where: { accountId, resolvedAt: null },
-          orderBy: { createdAt: 'desc' },
-        }),
-        this.admin.signInEvent.findMany({
-          where: { accountId },
-          orderBy: { occurredAt: 'desc' },
-          take: 10,
-        }),
-        this.admin.usageRollup.groupBy({
-          by: ['channel'],
-          where: { accountId, hour: -1 },
-          _sum: {
-            attempted: true,
-            succeeded: true,
-            failed: true,
-            revenueNgn: true,
-          },
-        }),
-        this.admin.senderIdReview.findMany({
-          where: { accountId },
-          orderBy: { submittedAt: 'desc' },
-          take: 20,
-        }),
-      ]);
+    const since30 = new Date(Date.now() - 30 * 24 * 3600_000);
+    const [
+      notes,
+      tags,
+      riskFlags,
+      signIns,
+      usageByChannel,
+      reviews,
+      lastTopUp,
+      recent,
+      lifetime,
+      activeSubs,
+    ] = await Promise.all([
+      this.admin.customerNote.findMany({
+        where: { accountId },
+        orderBy: [{ pinned: 'desc' }, { createdAt: 'desc' }],
+        take: 20,
+        include: { author: { select: { id: true, name: true } } },
+      }),
+      this.admin.customerTag.findMany({ where: { accountId } }),
+      this.admin.riskFlag.findMany({
+        where: { accountId, resolvedAt: null },
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.admin.signInEvent.findMany({
+        where: { accountId },
+        orderBy: { occurredAt: 'desc' },
+        take: 10,
+      }),
+      this.admin.usageRollup.groupBy({
+        by: ['channel'],
+        where: { accountId, hour: -1 },
+        _sum: {
+          attempted: true,
+          succeeded: true,
+          failed: true,
+          revenueNgn: true,
+        },
+      }),
+      this.admin.senderIdReview.findMany({
+        where: { accountId },
+        orderBy: { submittedAt: 'desc' },
+        take: 20,
+      }),
+      this.zapiack.read.tabTransaction.findFirst({
+        where: { accountId, type: 'CREDIT' },
+        orderBy: { createdAt: 'desc' },
+        select: { createdAt: true, charge: true },
+      }),
+      this.admin.usageRollup.aggregate({
+        where: { accountId, hour: -1, date: { gte: lagosDateOnly(since30) } },
+        _sum: { attempted: true, succeeded: true },
+      }),
+      this.admin.usageRollup.aggregate({
+        where: { accountId, hour: -1 },
+        _sum: { revenueNgn: true },
+      }),
+      this.zapiack.read.subscriptions.findMany({
+        where: { accountId, status: 'ACTIVE' },
+        orderBy: { createdAt: 'asc' },
+        include: { plan: true },
+      }),
+    ]);
 
     const reviewByApplication = new Map(
       reviews.map((r) => [r.applicationId, r]),
     );
 
+    const quotaByChannel = new Map(
+      account.usageBuffers.map((u) => [u.channel, u.monthlyCount]),
+    );
+    const attempted30 = Number(recent._sum.attempted ?? 0);
+    const succeeded30 = Number(recent._sum.succeeded ?? 0);
+    const mrr = activeSubs.reduce(
+      (sum, sub) =>
+        sub.plan.isFree
+          ? sum
+          : sum.plus(
+              sub.plan.billingInterval === 'YEARLY'
+                ? sub.plan.basePrice.div(12)
+                : sub.plan.basePrice,
+            ),
+      new Prisma.Decimal(0),
+    );
+    const severities = riskFlags.map((f) => f.severity);
+
     return {
+      // What the Customer 360 header and stat strip read, in one place.
+      overview: {
+        mrrNgn: mrr.toString(),
+        paidPlans: activeSubs.filter((s) => !s.plan.isFree).length,
+        messages30d: attempted30,
+        deliveredPct: attempted30
+          ? Math.round((succeeded30 / attempted30) * 1000) / 10
+          : null,
+        lifetimeSpendNgn: (lifetime._sum.revenueNgn ?? 0).toString(),
+        lastTopUpAt: lastTopUp?.createdAt ?? null,
+        lastTopUpNgn: lastTopUp?.charge.toString() ?? null,
+        riskScore: riskScore(severities),
+        riskLevel: riskLevel(severities),
+      },
+      // One row per channel the account holds a plan on.
+      products: activeSubs.map((sub) => ({
+        id: sub.id,
+        channel: sub.channel,
+        plan: sub.plan.name,
+        isFree: sub.plan.isFree,
+        isTrial: sub.isTrial,
+        priceNgn: sub.plan.basePrice.toString(),
+        interval: sub.plan.billingInterval,
+        overageEnabled: sub.plan.overageEnabled,
+        monthlyQuota: sub.plan.monthlyQuota,
+        used: quotaByChannel.get(sub.channel) ?? sub.usageCount,
+        currentPeriodEnd: sub.currentPeriodEnd,
+      })),
+      subscriptions: activeSubs.map((sub) => ({
+        id: sub.id,
+        status: sub.status,
+        plan: { id: sub.plan.id, name: sub.plan.name, channel: sub.channel },
+        currentPeriodEnd: sub.currentPeriodEnd,
+      })),
       profile: {
         id: account.id,
         businessName: account.senderIdApplications[0]?.businessName ?? null,
@@ -694,4 +928,22 @@ export class CustomersService {
     });
     return buildPage(rows, limit);
   }
+}
+
+const SEVERITY_WEIGHT: Record<string, number> = {
+  LOW: 10,
+  MEDIUM: 25,
+  HIGH: 45,
+  CRITICAL: 70,
+};
+
+/** A 0–100 score from the open flags, so the list and the detail page agree. */
+export function riskScore(severities: string[]): number {
+  const total = severities.reduce((n, s) => n + (SEVERITY_WEIGHT[s] ?? 10), 0);
+  return Math.min(100, total);
+}
+
+export function riskLevel(severities: string[]): 'low' | 'medium' | 'high' {
+  const score = riskScore(severities);
+  return score >= 45 ? 'high' : score >= 20 ? 'medium' : 'low';
 }

@@ -47,6 +47,15 @@ export class SearchCustomersDto extends CursorPageDto {
   flaggedOnly?: boolean;
 }
 
+export const CUSTOMER_SEGMENTS = [
+  'all',
+  'active',
+  'paying',
+  'free',
+  'flagged',
+  'suspended',
+] as const;
+
 /** The dashboard's customer table: numbered pages, so it pages by offset, not cursor. */
 export class CustomersTableDto {
   @IsOptional()
@@ -71,6 +80,25 @@ export class CustomersTableDto {
   @IsOptional()
   @IsEnum(AccountStatus)
   status?: AccountStatus;
+
+  /** The list's tabs; `all` is the same as leaving it out. */
+  @IsOptional()
+  @IsIn(CUSTOMER_SEGMENTS)
+  segment?: (typeof CUSTOMER_SEGMENTS)[number];
+
+  @IsOptional()
+  @IsString()
+  planId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2)
+  country?: string;
+
+  /** Accounts holding an active subscription on this channel. */
+  @IsOptional()
+  @IsString()
+  channel?: string;
 }
 
 export class CustomerUsageDto extends DateRangePageDto {
