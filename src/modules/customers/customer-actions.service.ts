@@ -1,7 +1,9 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
@@ -19,6 +21,8 @@ import type { StaffPrincipal } from '../../common/auth/staff-principal';
  */
 @Injectable()
 export class CustomerActionsService {
+  private readonly logger = new Logger(CustomerActionsService.name);
+
   constructor(
     private readonly apiCore: ApiCoreClient,
     private readonly writer: ZapiackWriteService,
@@ -72,11 +76,22 @@ export class CustomerActionsService {
       }
     }
 
-    const updated = await this.writer.write.accounts.update({
-      where: { id: accountId },
-      data: { accountStatus: status },
-      select: { id: true, accountStatus: true },
-    });
+    const updated = await this.writer.write.accounts
+      .update({
+        where: { id: accountId },
+        data: { accountStatus: status },
+        select: { id: true, accountStatus: true },
+      })
+      .catch((err: unknown) => {
+        // A write role that is missing or lacks the grant surfaces as a bare 500. Name it.
+        this.logger.error(
+          `Could not set account ${accountId} to ${status}: ${(err as Error).message}`,
+        );
+        throw new ServiceUnavailableException(
+          'The account could not be updated. admin-core has no write access to the product database: ' +
+            'check ZAPIACK_WRITE_DATABASE_URL and the zapiack_admin write grants.',
+        );
+      });
 
     // The customer app caches an account's status for an hour. Without clearing it a
     // suspended account keeps sending, and a reactivated one stays blocked, until it
@@ -227,7 +242,7 @@ export class CustomerActionsService {
         select: { id: true, name: true },
       }),
       this.zapiack.read.subscriptions.findFirst({
-        where: { accountId, status: 'active' },
+        where: { accountId, status: 'ACTIVE' },
         include: { plan: { select: { id: true, name: true } } },
       }),
     ]);
