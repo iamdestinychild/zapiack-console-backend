@@ -189,6 +189,23 @@ export class ApiCoreClient {
         this.logger.warn(
           `api-core ${path} -> ${response.status}: ${text.slice(0, 500)}`,
         );
+        // Express's own 404 means api-core has no such route, not that the account is
+        // missing. Say so, rather than pass "Cannot POST /internal/v1/..." to a person.
+        if (
+          response.status === 404 &&
+          /^Cannot (POST|GET)/.test(
+            (parsed as { message?: string })?.message ?? '',
+          )
+        ) {
+          throw new HttpException(
+            {
+              message:
+                'api-core does not support this action yet (its internal endpoint is not built). Nothing was changed.',
+              upstreamStatus: 404,
+            },
+            501,
+          );
+        }
         throw new HttpException(
           {
             message:
