@@ -148,6 +148,14 @@ export class ApiCoreClient {
     body: Record<string, unknown>,
     ctx: CommandContext,
   ): Promise<T> {
+    // An empty secret still signs, and api-core then answers 401 with no hint why.
+    // Say what is missing instead.
+    if (!this.cfg.serviceToken || !this.cfg.signingSecret) {
+      throw new ServiceUnavailableException(
+        'api-core is not configured on admin-core: set API_CORE_SERVICE_TOKEN and API_CORE_SIGNING_SECRET',
+      );
+    }
+
     const url = `${this.cfg.baseUrl}${path}`;
     const payload = JSON.stringify(body);
     const timestamp = Date.now().toString();
@@ -203,8 +211,11 @@ export class ApiCoreClient {
           `api-core timed out after ${this.cfg.timeoutMs}ms`,
         );
       }
+      this.logger.error(
+        `api-core ${url} unreachable: ${(err as Error).message}`,
+      );
       throw new BadGatewayException(
-        `api-core unreachable: ${(err as Error).message}`,
+        `api-core unreachable at ${this.cfg.baseUrl} (${(err as Error).message}). Check API_CORE_BASE_URL.`,
       );
     } finally {
       clearTimeout(timer);

@@ -242,7 +242,7 @@ export class CustomersService {
               },
             },
           },
-          accountBillings: { select: { channel: true } },
+          accountBillings: { select: { channel: true, billingType: true } },
           senderIdApplications: {
             select: { businessName: true },
             orderBy: { createdAt: 'desc' },
@@ -289,12 +289,22 @@ export class CustomersService {
             maskEmail(account.owner.email),
           email: maskEmail(account.owner.email),
           plan: subscription?.plan.name ?? null,
-          products: account.subscriptions.map((s) => ({
-            channel: s.channel,
-            plan: s.plan.name,
-            isFree: s.plan.isFree,
-            isTrial: s.isTrial,
-          })),
+          products: [
+            ...account.subscriptions.map((s) => ({
+              channel: s.channel,
+              plan: s.plan.name,
+              isFree: s.plan.isFree,
+              isTrial: s.isTrial,
+            })),
+            ...billedOnly(account.subscriptions, account.accountBillings).map(
+              (b) => ({
+                channel: b.channel,
+                plan: PAYG,
+                isFree: false,
+                isTrial: false,
+              }),
+            ),
+          ],
           channels: account.accountBillings.map((b) => b.channel),
           mrrNgn: mrr.toString(),
           walletNgn: account.creditBalance.toString(),
@@ -588,19 +598,36 @@ export class CustomersService {
         riskLevel: riskLevel(severities),
       },
       // One row per channel the account holds a plan on.
-      products: activeSubs.map((sub) => ({
-        id: sub.id,
-        channel: sub.channel,
-        plan: sub.plan.name,
-        isFree: sub.plan.isFree,
-        isTrial: sub.isTrial,
-        priceNgn: sub.plan.basePrice.toString(),
-        interval: sub.plan.billingInterval,
-        overageEnabled: sub.plan.overageEnabled,
-        monthlyQuota: sub.plan.monthlyQuota,
-        used: quotaByChannel.get(sub.channel) ?? sub.usageCount,
-        currentPeriodEnd: sub.currentPeriodEnd,
-      })),
+      products: [
+        ...activeSubs.map((sub) => ({
+          id: sub.id,
+          channel: sub.channel,
+          plan: sub.plan.name,
+          isFree: sub.plan.isFree,
+          isTrial: sub.isTrial,
+          priceNgn: sub.plan.basePrice.toString(),
+          interval: sub.plan.billingInterval,
+          overageEnabled: sub.plan.overageEnabled,
+          monthlyQuota: sub.plan.monthlyQuota,
+          used: quotaByChannel.get(sub.channel) ?? sub.usageCount,
+          currentPeriodEnd: sub.currentPeriodEnd,
+        })),
+        // A channel billed from the wallet has no subscription row, but it is a product
+        // the account uses; leaving it out made accounts look like they held nothing.
+        ...billedOnly(activeSubs, account.accountBillings).map((b) => ({
+          id: b.id,
+          channel: b.channel,
+          plan: PAYG,
+          isFree: false,
+          isTrial: false,
+          priceNgn: '0',
+          interval: 'MONTHLY',
+          overageEnabled: true,
+          monthlyQuota: 0,
+          used: quotaByChannel.get(b.channel) ?? 0,
+          currentPeriodEnd: null,
+        })),
+      ],
       subscriptions: activeSubs.map((sub) => ({
         id: sub.id,
         status: sub.status,
@@ -938,6 +965,17 @@ const SEVERITY_WEIGHT: Record<string, number> = {
 };
 
 /** A 0–100 score from the open flags, so the list and the detail page agree. */
+const PAYG = 'Pay as you go';
+
+/** Channels the account is billed on that no active subscription covers. */
+function billedOnly<B extends { channel: string }>(
+  subs: { channel: string }[],
+  billings: B[],
+): B[] {
+  const covered = new Set(subs.map((s) => s.channel));
+  return billings.filter((b) => !covered.has(b.channel));
+}
+
 export function riskScore(severities: string[]): number {
   const total = severities.reduce((n, s) => n + (SEVERITY_WEIGHT[s] ?? 10), 0);
   return Math.min(100, total);
