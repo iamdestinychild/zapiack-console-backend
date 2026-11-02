@@ -1,7 +1,6 @@
 /** Where a stored document can be read from. */
 export type DocumentSource =
-  | { kind: 's3'; key: string }
-  | { kind: 'cdn'; url: string };
+  { kind: 's3'; key: string } | { kind: 'cdn'; url: string };
 
 /**
  * Works out how to read a sender ID document from the address the product stored for it.
@@ -33,7 +32,11 @@ export function documentSource(
   }
   if (!key || key.split('/').includes('..')) return null;
 
-  if (cfg.senderIdBucket && cfg.senderIdPrefix && key.startsWith(cfg.senderIdPrefix)) {
+  if (
+    cfg.senderIdBucket &&
+    cfg.senderIdPrefix &&
+    key.startsWith(cfg.senderIdPrefix)
+  ) {
     return { kind: 's3', key };
   }
   return { kind: 'cdn', url: url.toString() };

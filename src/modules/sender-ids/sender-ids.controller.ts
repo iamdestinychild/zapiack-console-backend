@@ -109,7 +109,13 @@ export class SenderIdsController {
     @Query() query: DocumentUrlDto,
     @Res() res: Response,
   ) {
-    return this.documents.file(staff, id, docId, query.disposition ?? 'attachment', res);
+    return this.documents.file(
+      staff,
+      id,
+      docId,
+      query.disposition ?? 'attachment',
+      res,
+    );
   }
 
   @Get(':id/documents.zip')
