@@ -758,6 +758,7 @@ model SenderIdApplication {
   /// What the registry said, trimmed to what the letters and a reviewer need.
   cacData          Json?
   companyAddress   String?
+  contactPhone     String?
   incorporatedAt   DateTime?
 
   /// The signatory confirmed the details and authorised the letters in their name.

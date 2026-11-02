@@ -86,6 +86,26 @@ export class TemplateReviewClient {
     );
   }
 
+  /**
+   * Asks api-core to write the letters to the networks for a sender-ID application, from what it already holds. api-core
+   * writes them only when nothing a letter needs is missing, and answers with what is when something is.
+   */
+  generateSenderIdLetters(
+    applicationId: string,
+    force = false,
+  ): Promise<{
+    generated: boolean;
+    reason: 'MISSING_FIELDS' | 'ALREADY_HAVE_LETTERS' | null;
+    missing: string[];
+    networks: string[];
+  }> {
+    return this.call(
+      'POST',
+      `/admin/sender-ids/${encodeURIComponent(applicationId)}/letters`,
+      { force },
+    );
+  }
+
   private async call<T>(
     method: 'GET' | 'POST',
     path: string,
