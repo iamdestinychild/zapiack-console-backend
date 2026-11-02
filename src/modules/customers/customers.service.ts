@@ -555,7 +555,7 @@ export class CustomersService {
       }),
       this.admin.usageRollup.aggregate({
         where: { accountId, hour: -1 },
-        _sum: { revenueNgn: true },
+        _sum: { revenueNgn: true, attempted: true },
       }),
       this.zapiack.read.subscriptions.findMany({
         where: { accountId, status: 'ACTIVE' },
@@ -592,6 +592,8 @@ export class CustomersService {
         mrrNgn: mrr.toString(),
         paidPlans: activeSubs.filter((s) => !s.plan.isFree).length,
         messages30d: attempted30,
+        // Every message since the account began, from the same rollups: the 30-day figure is not the customer's own total.
+        messagesAllTime: Number(lifetime._sum.attempted ?? 0),
         deliveredPct: attempted30
           ? Math.round((succeeded30 / attempted30) * 1000) / 10
           : null,

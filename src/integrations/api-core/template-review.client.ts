@@ -106,6 +106,34 @@ export class TemplateReviewClient {
     );
   }
 
+  /**
+   * A customer paid outside the app. api-core puts the payment in their wallet, pays the plan from it and starts the
+   * subscription, all in one transaction. The bank reference makes a repeat harmless.
+   */
+  recordPlanPayment(
+    accountId: string,
+    input: {
+      planId: string;
+      amountReceivedNgn: string;
+      reference: string;
+      reason: string;
+      recordedBy: string;
+    },
+  ): Promise<{
+    alreadyApplied: boolean;
+    subscriptionId?: string;
+    creditReference: string;
+    credited?: string;
+    charged?: string;
+    currentPeriodEnd?: string;
+  }> {
+    return this.call(
+      'POST',
+      `/admin/accounts/${encodeURIComponent(accountId)}/plan-payment`,
+      input,
+    );
+  }
+
   private async call<T>(
     method: 'GET' | 'POST',
     path: string,

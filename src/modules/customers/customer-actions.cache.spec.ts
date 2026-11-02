@@ -47,6 +47,8 @@ function setup(cacheWorks = true) {
     {} as never,
     audit as never,
     productCache as never,
+    {} as never,
+    {} as never,
   );
   return { service, writer, audit, productCache };
 }

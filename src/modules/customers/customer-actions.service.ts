@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -9,7 +10,10 @@ import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { AuditService } from '../../common/audit/audit.service';
 import { ProductCacheService } from '../../common/redis/product-cache.service';
+import { ConfigService } from '@nestjs/config';
 import { ApiCoreClient } from '../../integrations/api-core/api-core.client';
+import { TemplateReviewClient } from '../../integrations/api-core/template-review.client';
+import type { AdminConfig } from '../../common/config/configuration';
 import { ZapiackWriteService } from '../../common/prisma/zapiack-write.service';
 import { AccountStatus } from '../../generated/zapiack/client';
 import type { RiskFlagType, RiskSeverity } from '../../generated/admin/client';
@@ -30,6 +34,8 @@ export class CustomerActionsService {
     private readonly admin: AdminPrismaService,
     private readonly audit: AuditService,
     private readonly productCache: ProductCacheService,
+    private readonly adminApiCore: TemplateReviewClient,
+    private readonly config: ConfigService<{ admin: AdminConfig }, true>,
   ) {}
 
   private ctx(actor: StaffPrincipal, idempotencyKey?: string) {
@@ -269,6 +275,76 @@ export class CustomerActionsService {
       planId,
       subscriptionId: result?.subscriptionId ?? null,
     };
+  }
+
+  /**
+   * A customer paid outside the app (a bank transfer) and the plan has to be started by hand. The payment goes into their
+   * wallet and the plan is paid from it, in one transaction in api-core; this adds who may do it, the limit, and the audit.
+   *
+   * Above the credit-approval limit it needs `credits.approve` as well, the same line the wallet adjustments draw, so one
+   * person cannot both receive and wave through a large sum.
+   */
+  async recordPlanPayment(
+    actor: StaffPrincipal,
+    accountId: string,
+    input: {
+      planId: string;
+      amountReceivedNgn: string;
+      reference: string;
+      reason: string;
+    },
+  ) {
+    await this.requireAccount(accountId);
+
+    const amount = Number(input.amountReceivedNgn);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new ConflictException(
+        'The amount received must be more than zero.',
+      );
+    }
+    const limit = this.config.get('admin', { infer: true }).limits
+      .creditApprovalThresholdNgn;
+    if (amount > limit && !actor.permissions.includes('credits.approve')) {
+      throw new ForbiddenException(
+        `Payments above ₦${limit.toLocaleString('en-NG')} need someone with credit approval to record them.`,
+      );
+    }
+
+    const [plan, before] = await Promise.all([
+      this.zapiack.read.plans.findUnique({
+        where: { id: input.planId },
+        select: { id: true, name: true },
+      }),
+      this.zapiack.read.accounts.findUnique({
+        where: { id: accountId },
+        select: { creditBalance: true },
+      }),
+    ]);
+    if (!plan) throw new NotFoundException('Plan not found');
+
+    const result = await this.adminApiCore.recordPlanPayment(accountId, {
+      ...input,
+      recordedBy: actor.email,
+    });
+
+    if (!result.alreadyApplied) {
+      await this.audit.record({
+        actor,
+        action: 'customers.plan_payment_recorded',
+        targetType: 'account',
+        targetId: accountId,
+        reason: input.reason,
+        before: { creditBalance: before?.creditBalance.toString() ?? null },
+        after: {
+          plan,
+          reference: input.reference,
+          credited: result.credited,
+          charged: result.charged,
+          subscriptionId: result.subscriptionId,
+        },
+      });
+    }
+    return result;
   }
 
   async resetRateLimits(
