@@ -99,6 +99,19 @@ export class SenderIdsController {
     );
   }
 
+  /** The file itself, for the in-app preview and for downloads. Audited like the URL route. */
+  @Get(':id/documents/:docId/file')
+  @RequirePermissions('senderid.documents.download')
+  documentFile(
+    @CurrentStaff() staff: StaffPrincipal,
+    @Param('id') id: string,
+    @Param('docId') docId: string,
+    @Query() query: DocumentUrlDto,
+    @Res() res: Response,
+  ) {
+    return this.documents.file(staff, id, docId, query.disposition ?? 'attachment', res);
+  }
+
   @Get(':id/documents.zip')
   @RequirePermissions('senderid.documents.download')
   documentsZip(

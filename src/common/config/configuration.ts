@@ -101,6 +101,8 @@ export interface AdminConfig {
     senderIdPrefix: string;
     exportBucket: string;
     exportPrefix: string;
+    /** Where uploaded documents are served from. Their stored address starts with this. */
+    cdnBaseUrl: string;
   };
 
   geoip: {
@@ -237,6 +239,7 @@ export default (): AdminConfig => ({
     senderIdPrefix: process.env.S3_SENDER_ID_PREFIX ?? 'sender-ids/',
     exportBucket: process.env.S3_EXPORT_BUCKET ?? '',
     exportPrefix: process.env.S3_EXPORT_PREFIX ?? 'exports/',
+    cdnBaseUrl: process.env.CDN_BASE_URL ?? 'https://cdn.zapiack.com',
   },
 
   geoip: {

@@ -231,10 +231,12 @@ export class CustomersService {
             orderBy: { createdAt: 'asc' },
             select: {
               channel: true,
+              type: true,
               isTrial: true,
               plan: {
                 select: {
                   name: true,
+                  type: true,
                   basePrice: true,
                   billingInterval: true,
                   isFree: true,
@@ -292,6 +294,7 @@ export class CustomersService {
           products: [
             ...account.subscriptions.map((s) => ({
               channel: s.channel,
+              type: s.plan.type ?? s.type,
               plan: s.plan.name,
               isFree: s.plan.isFree,
               isTrial: s.isTrial,
@@ -299,6 +302,7 @@ export class CustomersService {
             ...billedOnly(account.subscriptions, account.accountBillings).map(
               (b) => ({
                 channel: b.channel,
+                type: null,
                 plan: PAYG,
                 isFree: false,
                 isTrial: false,
@@ -602,6 +606,7 @@ export class CustomersService {
         ...activeSubs.map((sub) => ({
           id: sub.id,
           channel: sub.channel,
+          type: sub.plan.type ?? sub.type,
           plan: sub.plan.name,
           isFree: sub.plan.isFree,
           isTrial: sub.isTrial,
@@ -617,6 +622,7 @@ export class CustomersService {
         ...billedOnly(activeSubs, account.accountBillings).map((b) => ({
           id: b.id,
           channel: b.channel,
+          type: null,
           plan: PAYG,
           isFree: false,
           isTrial: false,
