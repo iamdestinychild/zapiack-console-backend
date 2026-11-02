@@ -26,6 +26,7 @@ import { CustomersService } from './customers.service';
 import { CustomerActionsService } from './customer-actions.service';
 import {
   ChangePlanDto,
+  PlanPaymentDto,
   CreateNoteDto,
   CreateRiskFlagDto,
   CustomersTableDto,
@@ -229,6 +230,18 @@ export class CustomersController {
       dto.reason,
       req.get('idempotency-key'),
     );
+  }
+
+  /** The customer paid outside the app: put it in their wallet and start the plan from it. */
+  @Post(':id/plan-payment')
+  @RequirePermissions('credits.adjust')
+  @Idempotent()
+  planPayment(
+    @CurrentStaff() staff: StaffPrincipal,
+    @Param('id') id: string,
+    @Body() dto: PlanPaymentDto,
+  ) {
+    return this.actions.recordPlanPayment(staff, id, dto);
   }
 
   @Post(':id/reset-rate-limits')

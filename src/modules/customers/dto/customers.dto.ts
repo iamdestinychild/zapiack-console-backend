@@ -135,6 +135,22 @@ export class ArchiveProjectDto extends ReasonDto {
   projectId!: string;
 }
 
+/** A customer paid outside the app and their plan has to be started by hand. */
+export class PlanPaymentDto extends ReasonDto {
+  @IsString()
+  planId!: string;
+
+  /** What actually arrived, in naira, as a decimal string. */
+  @IsNumberString()
+  amountReceivedNgn!: string;
+
+  /** The bank's reference for the transfer. Repeating one changes nothing. */
+  @IsString()
+  @MinLength(3)
+  @MaxLength(120)
+  reference!: string;
+}
+
 export class ChangePlanDto extends ReasonDto {
   @IsString()
   planId!: string;
