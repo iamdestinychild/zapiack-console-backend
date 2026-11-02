@@ -13,6 +13,7 @@ import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service
 import { AuditService } from '../../common/audit/audit.service';
 import type { StaffPrincipal } from '../../common/auth/staff-principal';
 import type { AdminConfig } from '../../common/config/configuration';
+import { TemplateReviewClient } from '../../integrations/api-core/template-review.client';
 import { S3Service } from '../../integrations/s3/s3.service';
 import { documentSource } from './document-source';
 
@@ -39,6 +40,7 @@ export class DocumentsService {
     private readonly zapiack: ZapiackPrismaService,
     private readonly audit: AuditService,
     private readonly s3: S3Service,
+    private readonly apiCore: TemplateReviewClient,
     private readonly config: ConfigService<{ admin: AdminConfig }, true>,
   ) {}
 
@@ -100,7 +102,9 @@ export class DocumentsService {
     return {
       url: document.fileUrl,
       fileName: document.fileOriginalName,
-      contentType: contentTypeOf(document.fileName),
+      contentType: contentTypeOf(
+        document.fileOriginalName || document.fileName,
+      ),
       type: document.type,
       provider: document.provider,
       uploadedAt: document.createdAt,
@@ -175,7 +179,10 @@ export class DocumentsService {
       );
     }
 
-    res.setHeader('Content-Type', contentTypeOf(document.fileName));
+    res.setHeader(
+      'Content-Type',
+      contentTypeOf(document.fileOriginalName || document.fileName),
+    );
     res.setHeader(
       'Content-Disposition',
       `${disposition}; filename="${sanitise(document.fileOriginalName)}"`,
@@ -190,6 +197,42 @@ export class DocumentsService {
       res.destroy(error);
     });
     body.pipe(res);
+  }
+
+  /**
+   * Has api-core write the letters to the networks for this application. It does so only when every field a letter needs is
+   * on file, and otherwise says which are missing so a reviewer can fill them in and generate by hand. Audited.
+   */
+  async generateLetters(
+    actor: StaffPrincipal,
+    reviewId: string,
+    force = false,
+  ) {
+    const review = await this.admin.senderIdReview.findUnique({
+      where: { id: reviewId },
+    });
+    if (!review) throw new NotFoundException('Review not found');
+
+    const result = await this.apiCore.generateSenderIdLetters(
+      review.applicationId,
+      force,
+    );
+
+    if (result.generated) {
+      await this.audit.record({
+        actor,
+        action: 'senderid.letters.generated',
+        targetType: 'sender_id_application',
+        targetId: review.applicationId,
+        metadata: {
+          reviewId,
+          accountId: review.accountId,
+          networks: result.networks,
+          forced: force,
+        },
+      });
+    }
+    return result;
   }
 
   /**

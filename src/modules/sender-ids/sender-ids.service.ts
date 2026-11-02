@@ -504,6 +504,7 @@ export class SenderIdsService {
             designation: application.designation,
             messageExamples: application.messageExamples,
             companyAddress: application.companyAddress,
+            contactPhone: application.contactPhone,
             incorporatedAt: application.incorporatedAt,
             // What CAC's registry said. NEEDS_REVIEW means the company was found but
             // the name or the signatory did not match: a person decides.

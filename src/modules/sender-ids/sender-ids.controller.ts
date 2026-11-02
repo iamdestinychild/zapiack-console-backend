@@ -118,6 +118,17 @@ export class SenderIdsController {
     );
   }
 
+  /** Writes the letters to the networks when everything they need is on file; says what is missing when it is not. */
+  @Post(':id/letters')
+  @RequirePermissions('senderid.review')
+  generateLetters(
+    @CurrentStaff() staff: StaffPrincipal,
+    @Param('id') id: string,
+    @Body() body: { force?: boolean },
+  ) {
+    return this.documents.generateLetters(staff, id, body?.force === true);
+  }
+
   @Get(':id/documents.zip')
   @RequirePermissions('senderid.documents.download')
   documentsZip(
