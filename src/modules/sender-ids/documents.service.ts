@@ -1,4 +1,9 @@
-import { BadGatewayException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadGatewayException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import archiver from 'archiver';
 import type { Response } from 'express';
@@ -121,14 +126,23 @@ export class DocumentsService {
     disposition: 'attachment' | 'inline',
     res: Response,
   ) {
-    const { review, document } = await this.resolveDocument(reviewId, documentId);
+    const { review, document } = await this.resolveDocument(
+      reviewId,
+      documentId,
+    );
 
-    const source = documentSource(document.fileUrl, this.config.get('admin', { infer: true }).s3);
+    const source = documentSource(
+      document.fileUrl,
+      this.config.get('admin', { infer: true }).s3,
+    );
     if (!source) throw new NotFoundException('Document not available');
 
     await this.audit.record({
       actor,
-      action: disposition === 'inline' ? 'senderid.document.preview' : 'senderid.document.download',
+      action:
+        disposition === 'inline'
+          ? 'senderid.document.preview'
+          : 'senderid.document.download',
       targetType: 'sender_id_document',
       targetId: documentId,
       metadata: {
@@ -147,17 +161,25 @@ export class DocumentsService {
         body = await this.s3.openSenderIdDocument(source.key);
       } else {
         const response = await fetch(source.url);
-        if (!response.ok || !response.body) throw new Error(`CDN responded ${response.status}`);
+        if (!response.ok || !response.body)
+          throw new Error(`CDN responded ${response.status}`);
         length = response.headers.get('content-length');
         body = Readable.fromWeb(response.body as never);
       }
     } catch (error) {
-      this.logger.error(`Could not read document ${documentId}: ${(error as Error).message}`);
-      throw new BadGatewayException('The document could not be retrieved from storage. Try again shortly.');
+      this.logger.error(
+        `Could not read document ${documentId}: ${(error as Error).message}`,
+      );
+      throw new BadGatewayException(
+        'The document could not be retrieved from storage. Try again shortly.',
+      );
     }
 
     res.setHeader('Content-Type', contentTypeOf(document.fileName));
-    res.setHeader('Content-Disposition', `${disposition}; filename="${sanitise(document.fileOriginalName)}"`);
+    res.setHeader(
+      'Content-Disposition',
+      `${disposition}; filename="${sanitise(document.fileOriginalName)}"`,
+    );
     // Personal documents: never kept by a shared cache, and never sniffed into another type.
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
