@@ -4,6 +4,11 @@ import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { LAGOS, lagosDateOnly } from '../../common/time/lagos';
 import { Prisma } from '../../generated/zapiack/client';
+import {
+  upsertDestinationRows,
+  upsertRequestRows,
+  upsertUsageRows,
+} from './bulk-upsert';
 
 interface UsageBucket {
   date: Date;
@@ -195,37 +200,8 @@ export class RollupsService {
   }
 
   private async upsertUsageBuckets(buckets: UsageBucket[], finalisedAt?: Date) {
-    // Chunked so a busy day does not open one enormous transaction.
-    for (const chunk of chunked(buckets, 500)) {
-      await this.admin.$transaction(
-        chunk.map((b) =>
-          this.admin.usageRollup.upsert({
-            where: {
-              date_hour_channel_accountId_country_provider: {
-                date: b.date,
-                hour: b.hour,
-                channel: b.channel,
-                accountId: b.accountId,
-                country: b.country,
-                provider: b.provider,
-              },
-            },
-            create: { ...b, finalisedAt },
-            // Replace rather than increment: the bucket is recomputed from source,
-            // which is what makes a re-run safe.
-            update: {
-              attempted: b.attempted,
-              succeeded: b.succeeded,
-              failed: b.failed,
-              units: b.units,
-              revenueNgn: b.revenueNgn,
-              costNgn: b.costNgn,
-              finalisedAt,
-            },
-          }),
-        ),
-      );
-    }
+    // In bulk and as plain SQL: see bulk-upsert.ts for why not `upsert` per row.
+    await upsertUsageRows(this.admin, buckets, finalisedAt);
   }
 
   // ---------------------------------------------------------------- destinations
@@ -263,29 +239,10 @@ export class RollupsService {
       GROUP BY 1, 2, 3, 4, 5
     `;
 
-    for (const chunk of chunked(rows, 500)) {
-      await this.admin.$transaction(
-        chunk.map((r) =>
-          this.admin.destinationRollup.upsert({
-            where: {
-              date_channel_accountId_country_network: {
-                date: r.date,
-                channel: r.channel,
-                accountId: r.accountId,
-                country: r.country,
-                network: r.network ?? '',
-              },
-            },
-            create: { ...r, network: r.network ?? '' },
-            update: {
-              attempted: r.attempted,
-              delivered: r.delivered,
-              costNgn: r.costNgn,
-            },
-          }),
-        ),
-      );
-    }
+    await upsertDestinationRows(
+      this.admin,
+      rows.map((r) => ({ ...r, network: r.network ?? '' })),
+    );
     // Anything the run did not touch has a stale `updatedAt` and no source behind it.
     await this.admin.destinationRollup.deleteMany({
       where: { date: lagosDateOnly(day), updatedAt: { lt: runStartedAt } },
@@ -481,44 +438,24 @@ export class RollupsService {
       keys.map((k) => [k.keyPrefix, k.accountId]),
     );
 
-    for (const chunk of chunked(rows, 500)) {
-      await this.admin.$transaction(
-        chunk.map((r) => {
-          // Unattributed traffic (no key, or a key since deleted) is kept under an
-          // empty account rather than dropped: the totals still have to add up.
-          const accountId = r.apiKeyPrefix
-            ? (accountByPrefix.get(r.apiKeyPrefix) ?? '')
-            : '';
-          const data = {
-            total: r.total,
-            clientErrors: r.clientErrors,
-            serverErrors: r.serverErrors,
-          };
-          return this.admin.requestRollup.upsert({
-            where: {
-              date_hour_accountId_endpoint_method_country: {
-                date: r.date,
-                hour: r.hour,
-                accountId,
-                endpoint: r.endpoint,
-                method: r.method,
-                country: r.country,
-              },
-            },
-            create: {
-              date: r.date,
-              hour: r.hour,
-              accountId,
-              endpoint: r.endpoint,
-              method: r.method,
-              country: r.country,
-              ...data,
-            },
-            update: data,
-          });
-        }),
-      );
-    }
+    await upsertRequestRows(
+      this.admin,
+      rows.map((r) => ({
+        date: r.date,
+        hour: r.hour,
+        // Unattributed traffic (no key, or a key since deleted) is kept under an
+        // empty account rather than dropped: the totals still have to add up.
+        accountId: r.apiKeyPrefix
+          ? (accountByPrefix.get(r.apiKeyPrefix) ?? '')
+          : '',
+        endpoint: r.endpoint,
+        method: r.method,
+        country: r.country,
+        total: r.total,
+        clientErrors: r.clientErrors,
+        serverErrors: r.serverErrors,
+      })),
+    );
     return rows.length;
   }
 
@@ -553,11 +490,4 @@ export class RollupsService {
       lastError: w.lastError,
     }));
   }
-}
-
-function chunked<T>(items: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size)
-    out.push(items.slice(i, i + size));
-  return out;
 }
