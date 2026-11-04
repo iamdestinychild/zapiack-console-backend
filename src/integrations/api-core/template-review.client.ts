@@ -56,11 +56,23 @@ export interface ApiCoreAvailabilityRule {
   accountCountry: string;
   service: string;
   destinationCountry: string;
+  /** TRANSACTIONAL or PROMOTIONAL, or `*` for every kind of message. */
+  messageType: string;
   enabled: boolean;
   note: string | null;
   updatedBy: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ApiCoreAvailabilityChange {
+  accountCountry: string;
+  service: string;
+  destinationCountry: string;
+  messageType?: string;
+  enabled: boolean;
+  note?: string;
+  updatedBy: string;
 }
 
 /**
@@ -164,6 +176,26 @@ export class TemplateReviewClient {
     );
   }
 
+  /**
+   * Charges the plan to the card the customer has on file. The plan starts when the card payment clears, so the answer is a
+   * payment reference rather than a subscription.
+   */
+  chargePlanToCard(
+    accountId: string,
+    input: { planId: string },
+  ): Promise<{
+    message?: string;
+    success?: boolean;
+    paidWith?: string;
+    reference?: string;
+  }> {
+    return this.call(
+      'POST',
+      `/admin/accounts/${encodeURIComponent(accountId)}/plan-card`,
+      input,
+    );
+  }
+
   /** Adds to or charges a wallet by hand. The key makes a repeat return what was done the first time. */
   adjustBalance(
     accountId: string,
@@ -192,15 +224,18 @@ export class TemplateReviewClient {
     return this.call('GET', '/admin/service-availability');
   }
 
-  setAvailability(input: {
-    accountCountry: string;
-    service: string;
-    destinationCountry: string;
-    enabled: boolean;
-    note?: string;
-    updatedBy: string;
-  }): Promise<ApiCoreAvailabilityRule> {
+  setAvailability(
+    input: ApiCoreAvailabilityChange,
+  ): Promise<ApiCoreAvailabilityRule> {
     return this.call('PUT', '/admin/service-availability', input);
+  }
+
+  /** Several changes together, applied all or nothing. Answers with every rule as it stands afterwards. */
+  changeAvailability(input: {
+    upserts: ApiCoreAvailabilityChange[];
+    deleteIds: string[];
+  }): Promise<ApiCoreAvailabilityRule[]> {
+    return this.call('POST', '/admin/service-availability/bulk', input);
   }
 
   deleteAvailability(id: string): Promise<ApiCoreAvailabilityRule> {

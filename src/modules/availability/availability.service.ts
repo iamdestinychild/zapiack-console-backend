@@ -5,16 +5,25 @@ import {
   ApiCoreAvailabilityRule,
   TemplateReviewClient,
 } from '../../integrations/api-core/template-review.client';
-import { SetAvailabilityDto } from './dto/availability.dto';
+import { ChangeAvailabilityDto } from './dto/availability.dto';
 
-const same = (a: ApiCoreAvailabilityRule, b: Partial<ApiCoreAvailabilityRule>) =>
-  a.accountCountry === b.accountCountry &&
-  a.service === b.service &&
-  a.destinationCountry === b.destinationCountry;
+const describe = (r: {
+  accountCountry: string;
+  service: string;
+  destinationCountry: string;
+  messageType?: string;
+  enabled: boolean;
+}) => ({
+  accountCountry: r.accountCountry,
+  service: r.service,
+  destinationCountry: r.destinationCountry,
+  messageType: r.messageType ?? '*',
+  enabled: r.enabled,
+});
 
 /**
- * Which services accounts from each country may use, and towards which countries. The rows live with the product (api-core
- * enforces them on every send and in the price list); this adds who may change them and the audit trail.
+ * Which products accounts from each country may use, and for SMS where they can send and which kinds of message. The rows
+ * live with the product (api-core enforces them on every request); this adds who may change them and the audit trail.
  */
 @Injectable()
 export class AvailabilityService {
@@ -27,50 +36,39 @@ export class AvailabilityService {
     return this.apiCore.listAvailability();
   }
 
-  async set(actor: StaffPrincipal, dto: SetAvailabilityDto) {
-    const key = {
-      accountCountry: dto.accountCountry.toUpperCase(),
-      service: dto.service,
-      destinationCountry: dto.destinationCountry.toUpperCase(),
-    };
-    const before = (await this.apiCore.listAvailability()).find((r) =>
-      same(r, key),
-    );
-    const row = await this.apiCore.setAvailability({
-      ...key,
-      enabled: dto.enabled,
-      note: dto.note,
-      updatedBy: actor.email,
-    });
-    await this.audit.record({
-      actor,
-      action: 'availability.set',
-      targetType: 'availability_rule',
-      targetId: row.id,
-      reason: dto.reason,
-      before: before
-        ? { enabled: before.enabled, note: before.note }
-        : null,
-      after: { ...key, enabled: row.enabled, note: row.note },
-    });
-    return row;
-  }
+  /**
+   * One save is one change: every rule it adds, changes or removes is applied together in api-core, and written to the audit
+   * log as a single entry that shows what each rule said before and after.
+   */
+  async change(actor: StaffPrincipal, dto: ChangeAvailabilityDto) {
+    const before = await this.apiCore.listAvailability();
+    const byId = new Map(before.map((r) => [r.id, r]));
+    const removed: ApiCoreAvailabilityRule[] = dto.deleteIds
+      .map((id) => byId.get(id))
+      .filter((r): r is ApiCoreAvailabilityRule => Boolean(r));
 
-  async remove(actor: StaffPrincipal, id: string, reason: string) {
-    const row = await this.apiCore.deleteAvailability(id);
+    const upserts = dto.upserts.map((r) => ({
+      ...r,
+      accountCountry: r.accountCountry.toUpperCase(),
+      destinationCountry: r.destinationCountry.toUpperCase(),
+      messageType: r.messageType ?? '*',
+      updatedBy: actor.email,
+    }));
+
+    const after = await this.apiCore.changeAvailability({
+      upserts,
+      deleteIds: dto.deleteIds,
+    });
+
     await this.audit.record({
       actor,
-      action: 'availability.removed',
+      action: 'availability.changed',
       targetType: 'availability_rule',
-      targetId: id,
-      reason,
-      before: {
-        accountCountry: row.accountCountry,
-        service: row.service,
-        destinationCountry: row.destinationCountry,
-        enabled: row.enabled,
-      },
+      targetId: 'bulk',
+      reason: dto.reason,
+      before: { removed: removed.map(describe) },
+      after: { saved: upserts.map(describe), rules: after.length },
     });
-    return row;
+    return after;
   }
 }
