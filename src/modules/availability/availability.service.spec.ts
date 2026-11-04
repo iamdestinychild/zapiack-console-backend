@@ -1,22 +1,71 @@
+import { AuditEntry, AuditService } from '../../common/audit/audit.service';
+import type { StaffPrincipal } from '../../common/auth/staff-principal';
+import {
+  ApiCoreAvailabilityRule,
+  TemplateReviewClient,
+} from '../../integrations/api-core/template-review.client';
 import { AvailabilityService } from './availability.service';
 
-const actor: any = { id: 'staff-1', email: 'ops@zapiack.com', permissions: ['availability.manage'] };
+const actor: StaffPrincipal = {
+  id: 'staff-1',
+  email: 'ops@zapiack.com',
+  name: 'Ops Staff',
+  roleId: 'role-1',
+  roleKey: 'ops',
+  permissions: ['availability.manage'],
+  sessionId: 'session-1',
+  sessionEpoch: 1,
+};
 
-function build(existing: any[] = []) {
-  const calls: any = { set: [], del: [], audit: [] };
-  const client: any = {
-    listAvailability: async () => existing,
-    setAvailability: async (input: any) => {
+type SetAvailabilityInput = Parameters<
+  TemplateReviewClient['setAvailability']
+>[0];
+
+function build(existing: ApiCoreAvailabilityRule[] = []) {
+  const calls: {
+    set: SetAvailabilityInput[];
+    del: string[];
+    audit: AuditEntry[];
+  } = { set: [], del: [], audit: [] };
+  const client: Pick<
+    TemplateReviewClient,
+    'listAvailability' | 'setAvailability' | 'deleteAvailability'
+  > = {
+    listAvailability: () => Promise.resolve(existing),
+    setAvailability: (input) => {
       calls.set.push(input);
-      return { id: 'r1', note: input.note ?? null, ...input };
+      return Promise.resolve({
+        id: 'r1',
+        accountCountry: input.accountCountry,
+        service: input.service,
+        destinationCountry: input.destinationCountry,
+        enabled: input.enabled,
+        note: input.note ?? null,
+        updatedBy: input.updatedBy,
+        createdAt: new Date(0).toISOString(),
+        updatedAt: new Date(0).toISOString(),
+      });
     },
-    deleteAvailability: async (id: string) => {
+    deleteAvailability: (id) => {
       calls.del.push(id);
-      return existing.find((r) => r.id === id);
+      const row = existing.find((rule) => rule.id === id);
+      if (!row) throw new Error(`Availability rule not found: ${id}`);
+      return Promise.resolve(row);
     },
   };
-  const audit: any = { record: async (e: any) => calls.audit.push(e) };
-  return { svc: new AvailabilityService(client, audit), calls };
+  const audit: Pick<AuditService, 'record'> = {
+    record: (entry) => {
+      calls.audit.push(entry);
+      return Promise.resolve();
+    },
+  };
+  return {
+    svc: new AvailabilityService(
+      client as unknown as TemplateReviewClient,
+      audit as unknown as AuditService,
+    ),
+    calls,
+  };
 }
 
 describe('service availability', () => {
@@ -44,7 +93,17 @@ describe('service availability', () => {
 
   it('shows what a rule was before it was changed', async () => {
     const { svc, calls } = build([
-      { id: 'r1', accountCountry: 'US', service: 'SMS', destinationCountry: 'NG', enabled: false, note: null },
+      {
+        id: 'r1',
+        accountCountry: 'US',
+        service: 'SMS',
+        destinationCountry: 'NG',
+        enabled: false,
+        note: null,
+        updatedBy: 'ops@zapiack.com',
+        createdAt: new Date(0).toISOString(),
+        updatedAt: new Date(0).toISOString(),
+      },
     ]);
     await svc.set(actor, {
       accountCountry: 'US',
@@ -59,7 +118,17 @@ describe('service availability', () => {
 
   it('audits a removed rule with what it said', async () => {
     const { svc, calls } = build([
-      { id: 'r1', accountCountry: 'GH', service: 'SMS', destinationCountry: '*', enabled: false, note: null },
+      {
+        id: 'r1',
+        accountCountry: 'GH',
+        service: 'SMS',
+        destinationCountry: '*',
+        enabled: false,
+        note: null,
+        updatedBy: 'ops@zapiack.com',
+        createdAt: new Date(0).toISOString(),
+        updatedAt: new Date(0).toISOString(),
+      },
     ]);
     await svc.remove(actor, 'r1', 'No longer needed');
     expect(calls.del).toEqual(['r1']);

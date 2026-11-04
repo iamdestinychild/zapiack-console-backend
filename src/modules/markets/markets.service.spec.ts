@@ -1,34 +1,74 @@
+import { AuditEntry, AuditService } from '../../common/audit/audit.service';
+import type { StaffPrincipal } from '../../common/auth/staff-principal';
+import {
+  ApiCoreBillingMarket,
+  TemplateReviewClient,
+} from '../../integrations/api-core/template-review.client';
 import { MarketsService } from './markets.service';
 
-const actor: any = {
+const actor: StaffPrincipal = {
   id: 'staff-1',
   email: 'ops@zapiack.com',
+  name: 'Ops Staff',
+  roleId: 'role-1',
+  roleKey: 'ops',
   permissions: ['pricing.manage'],
+  sessionId: 'session-1',
+  sessionEpoch: 1,
 };
 
-function build(existing: any[] = []) {
-  const calls: any = { set: [], del: [], audit: [] };
-  const client: any = {
-    listBillingMarkets: async () => existing,
-    setBillingMarket: async (input: any) => {
+type SetBillingMarketInput = Parameters<
+  TemplateReviewClient['setBillingMarket']
+>[0];
+
+function build(existing: ApiCoreBillingMarket[] = []) {
+  const calls: {
+    set: SetBillingMarketInput[];
+    del: string[];
+    audit: AuditEntry[];
+  } = { set: [], del: [], audit: [] };
+  const client: Pick<
+    TemplateReviewClient,
+    'listBillingMarkets' | 'setBillingMarket' | 'deleteBillingMarket'
+  > = {
+    listBillingMarkets: () => Promise.resolve(existing),
+    setBillingMarket: (input) => {
       calls.set.push(input);
-      return {
+      return Promise.resolve({
         id: 'm1',
+        countryCode: input.countryCode,
+        currency: input.currency,
+        welcomeBonusEnabled: input.welcomeBonusEnabled,
         note: input.note ?? null,
         welcomeBonusAmount:
           input.welcomeBonusAmount != null
             ? String(input.welcomeBonusAmount)
             : null,
-        ...input,
-      };
+        updatedBy: input.updatedBy,
+        createdAt: new Date(0).toISOString(),
+        updatedAt: new Date(0).toISOString(),
+      });
     },
-    deleteBillingMarket: async (id: string) => {
+    deleteBillingMarket: (id) => {
       calls.del.push(id);
-      return existing.find((m) => m.id === id);
+      const row = existing.find((market) => market.id === id);
+      if (!row) throw new Error(`Billing market not found: ${id}`);
+      return Promise.resolve(row);
     },
   };
-  const audit: any = { record: async (e: any) => calls.audit.push(e) };
-  return { svc: new MarketsService(client, audit), calls };
+  const audit: Pick<AuditService, 'record'> = {
+    record: (entry) => {
+      calls.audit.push(entry);
+      return Promise.resolve();
+    },
+  };
+  return {
+    svc: new MarketsService(
+      client as unknown as TemplateReviewClient,
+      audit as unknown as AuditService,
+    ),
+    calls,
+  };
 }
 
 describe('billing markets', () => {
@@ -63,6 +103,9 @@ describe('billing markets', () => {
         welcomeBonusEnabled: true,
         welcomeBonusAmount: '100',
         note: null,
+        updatedBy: 'ops@zapiack.com',
+        createdAt: new Date(0).toISOString(),
+        updatedAt: new Date(0).toISOString(),
       },
     ]);
     await svc.set(actor, {
@@ -89,6 +132,9 @@ describe('billing markets', () => {
         welcomeBonusEnabled: true,
         welcomeBonusAmount: '1',
         note: null,
+        updatedBy: 'ops@zapiack.com',
+        createdAt: new Date(0).toISOString(),
+        updatedAt: new Date(0).toISOString(),
       },
     ]);
     await svc.remove(actor, 'm1', 'Not launching');

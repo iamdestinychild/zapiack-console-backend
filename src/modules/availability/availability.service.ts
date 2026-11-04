@@ -7,7 +7,10 @@ import {
 } from '../../integrations/api-core/template-review.client';
 import { SetAvailabilityDto } from './dto/availability.dto';
 
-const same = (a: ApiCoreAvailabilityRule, b: Partial<ApiCoreAvailabilityRule>) =>
+const same = (
+  a: ApiCoreAvailabilityRule,
+  b: Partial<ApiCoreAvailabilityRule>,
+) =>
   a.accountCountry === b.accountCountry &&
   a.service === b.service &&
   a.destinationCountry === b.destinationCountry;
@@ -48,9 +51,7 @@ export class AvailabilityService {
       targetType: 'availability_rule',
       targetId: row.id,
       reason: dto.reason,
-      before: before
-        ? { enabled: before.enabled, note: before.note }
-        : null,
+      before: before ? { enabled: before.enabled, note: before.note } : null,
       after: { ...key, enabled: row.enabled, note: row.note },
     });
     return row;

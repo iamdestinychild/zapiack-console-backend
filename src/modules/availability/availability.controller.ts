@@ -1,5 +1,17 @@
-import { Body, Controller, Delete, Get, Param, Post, Query } from '@nestjs/common';
-import { CurrentStaff, Idempotent, RequirePermissions } from '../../common/auth/decorators';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Query,
+} from '@nestjs/common';
+import {
+  CurrentStaff,
+  Idempotent,
+  RequirePermissions,
+} from '../../common/auth/decorators';
 import type { StaffPrincipal } from '../../common/auth/staff-principal';
 import { ReasonDto } from '../../common/dto/common.dto';
 import { AvailabilityService } from './availability.service';
