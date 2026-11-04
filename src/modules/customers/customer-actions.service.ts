@@ -297,10 +297,9 @@ export class CustomerActionsService {
     await this.requireAccount(accountId);
 
     const amount = Number(input.amountReceivedNgn);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      throw new ConflictException(
-        'The amount received must be more than zero.',
-      );
+    // Zero is allowed: the plan is then charged to what the wallet already holds.
+    if (!Number.isFinite(amount) || amount < 0) {
+      throw new ConflictException('The amount received cannot be negative.');
     }
     const limit = this.config.get('admin', { infer: true }).limits
       .creditApprovalThresholdNgn;

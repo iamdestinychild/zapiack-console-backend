@@ -140,7 +140,7 @@ export class PlanPaymentDto extends ReasonDto {
   @IsString()
   planId!: string;
 
-  /** What actually arrived, in naira, as a decimal string. */
+  /** What actually arrived, in naira, as a decimal string. "0" charges the plan to what the wallet already holds. */
   @IsNumberString()
   amountReceivedNgn!: string;
 
