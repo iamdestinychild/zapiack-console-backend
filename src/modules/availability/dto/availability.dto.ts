@@ -1,4 +1,11 @@
-import { IsBoolean, IsIn, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsIn,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+} from 'class-validator';
 import { ReasonDto } from '../../../common/dto/common.dto';
 
 export const AVAILABILITY_SERVICES = ['SMS'] as const;
@@ -11,7 +18,7 @@ export class SetAvailabilityDto extends ReasonDto {
   })
   accountCountry!: string;
 
-  @IsIn(AVAILABILITY_SERVICES as unknown as string[])
+  @IsIn(AVAILABILITY_SERVICES)
   service!: string;
 
   /** The country messages go to, or `*` for the whole service. */
