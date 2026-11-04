@@ -1,21 +1,12 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Get, Post } from '@nestjs/common';
 import {
   CurrentStaff,
   Idempotent,
   RequirePermissions,
 } from '../../common/auth/decorators';
 import type { StaffPrincipal } from '../../common/auth/staff-principal';
-import { ReasonDto } from '../../common/dto/common.dto';
 import { AvailabilityService } from './availability.service';
-import { SetAvailabilityDto } from './dto/availability.dto';
+import { ChangeAvailabilityDto } from './dto/availability.dto';
 
 @Controller('availability')
 @RequirePermissions('availability.manage')
@@ -27,19 +18,13 @@ export class AvailabilityController {
     return this.availability.list();
   }
 
-  /** Creates the rule, or changes the one for the same account country, service and destination. */
+  /** Creates, changes and removes rules together, as one audited change. */
   @Post()
   @Idempotent()
-  set(@CurrentStaff() staff: StaffPrincipal, @Body() dto: SetAvailabilityDto) {
-    return this.availability.set(staff, dto);
-  }
-
-  @Delete(':id')
-  remove(
+  change(
     @CurrentStaff() staff: StaffPrincipal,
-    @Param('id') id: string,
-    @Query() query: ReasonDto,
+    @Body() dto: ChangeAvailabilityDto,
   ) {
-    return this.availability.remove(staff, id, query.reason);
+    return this.availability.change(staff, dto);
   }
 }

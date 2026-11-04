@@ -17,40 +17,37 @@ const actor: StaffPrincipal = {
   sessionEpoch: 1,
 };
 
-type SetAvailabilityInput = Parameters<
-  TemplateReviewClient['setAvailability']
->[0];
+type ChangeInput = Parameters<TemplateReviewClient['changeAvailability']>[0];
+
+const rule = (
+  over: Partial<ApiCoreAvailabilityRule>,
+): ApiCoreAvailabilityRule => ({
+  id: 'r1',
+  accountCountry: 'US',
+  service: 'SMS',
+  destinationCountry: 'NG',
+  messageType: '*',
+  enabled: false,
+  note: null,
+  updatedBy: 'ops@zapiack.com',
+  createdAt: new Date(0).toISOString(),
+  updatedAt: new Date(0).toISOString(),
+  ...over,
+});
 
 function build(existing: ApiCoreAvailabilityRule[] = []) {
-  const calls: {
-    set: SetAvailabilityInput[];
-    del: string[];
-    audit: AuditEntry[];
-  } = { set: [], del: [], audit: [] };
+  const calls: { change: ChangeInput[]; audit: AuditEntry[] } = {
+    change: [],
+    audit: [],
+  };
   const client: Pick<
     TemplateReviewClient,
-    'listAvailability' | 'setAvailability' | 'deleteAvailability'
+    'listAvailability' | 'changeAvailability'
   > = {
     listAvailability: () => Promise.resolve(existing),
-    setAvailability: (input) => {
-      calls.set.push(input);
-      return Promise.resolve({
-        id: 'r1',
-        accountCountry: input.accountCountry,
-        service: input.service,
-        destinationCountry: input.destinationCountry,
-        enabled: input.enabled,
-        note: input.note ?? null,
-        updatedBy: input.updatedBy,
-        createdAt: new Date(0).toISOString(),
-        updatedAt: new Date(0).toISOString(),
-      });
-    },
-    deleteAvailability: (id) => {
-      calls.del.push(id);
-      const row = existing.find((rule) => rule.id === id);
-      if (!row) throw new Error(`Availability rule not found: ${id}`);
-      return Promise.resolve(row);
+    changeAvailability: (input) => {
+      calls.change.push(input);
+      return Promise.resolve([]);
     },
   };
   const audit: Pick<AuditService, 'record'> = {
@@ -69,72 +66,59 @@ function build(existing: ApiCoreAvailabilityRule[] = []) {
 }
 
 describe('service availability', () => {
-  it('normalises the countries, records who changed it, and audits the change', async () => {
+  it('normalises the countries, records who changed it, and audits the change as one entry', async () => {
     const { svc, calls } = build();
-    await svc.set(actor, {
-      accountCountry: 'us',
-      service: 'SMS',
-      destinationCountry: 'ng',
-      enabled: false,
-      reason: 'Nigerian SMS is for local accounts only',
+    await svc.change(actor, {
+      upserts: [
+        {
+          accountCountry: 'gh',
+          service: 'EMAIL',
+          destinationCountry: '*',
+          enabled: false,
+        },
+        {
+          accountCountry: '*',
+          service: 'SMS',
+          destinationCountry: 'us',
+          messageType: 'PROMOTIONAL',
+          enabled: false,
+        },
+      ],
+      deleteIds: [],
+      reason: 'Not launching in Ghana yet',
     });
-    expect(calls.set[0]).toMatchObject({
-      accountCountry: 'US',
-      destinationCountry: 'NG',
-      enabled: false,
+    expect(calls.change[0].upserts[0]).toMatchObject({
+      accountCountry: 'GH',
+      messageType: '*',
       updatedBy: 'ops@zapiack.com',
     });
+    expect(calls.change[0].upserts[1]).toMatchObject({
+      destinationCountry: 'US',
+      messageType: 'PROMOTIONAL',
+    });
+    expect(calls.audit).toHaveLength(1);
     expect(calls.audit[0]).toMatchObject({
-      action: 'availability.set',
-      before: null,
-      reason: 'Nigerian SMS is for local accounts only',
+      action: 'availability.changed',
+      reason: 'Not launching in Ghana yet',
     });
   });
 
-  it('shows what a rule was before it was changed', async () => {
-    const { svc, calls } = build([
+  it('shows the rules that were taken away', async () => {
+    const { svc, calls } = build([rule({})]);
+    await svc.change(actor, {
+      upserts: [],
+      deleteIds: ['r1', 'gone'],
+      reason: 'Reopening for US accounts',
+    });
+    expect((calls.audit[0].before as { removed: unknown }).removed).toEqual([
       {
-        id: 'r1',
         accountCountry: 'US',
         service: 'SMS',
         destinationCountry: 'NG',
+        messageType: '*',
         enabled: false,
-        note: null,
-        updatedBy: 'ops@zapiack.com',
-        createdAt: new Date(0).toISOString(),
-        updatedAt: new Date(0).toISOString(),
       },
     ]);
-    await svc.set(actor, {
-      accountCountry: 'US',
-      service: 'SMS',
-      destinationCountry: 'NG',
-      enabled: true,
-      reason: 'Reopening for US accounts',
-    });
-    expect(calls.audit[0].before).toEqual({ enabled: false, note: null });
-    expect(calls.audit[0].after).toMatchObject({ enabled: true });
-  });
-
-  it('audits a removed rule with what it said', async () => {
-    const { svc, calls } = build([
-      {
-        id: 'r1',
-        accountCountry: 'GH',
-        service: 'SMS',
-        destinationCountry: '*',
-        enabled: false,
-        note: null,
-        updatedBy: 'ops@zapiack.com',
-        createdAt: new Date(0).toISOString(),
-        updatedAt: new Date(0).toISOString(),
-      },
-    ]);
-    await svc.remove(actor, 'r1', 'No longer needed');
-    expect(calls.del).toEqual(['r1']);
-    expect(calls.audit[0]).toMatchObject({
-      action: 'availability.removed',
-      before: { accountCountry: 'GH', enabled: false },
-    });
+    expect(calls.change[0].deleteIds).toEqual(['r1', 'gone']);
   });
 });

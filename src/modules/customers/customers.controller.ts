@@ -26,6 +26,7 @@ import { CustomersService } from './customers.service';
 import { CustomerActionsService } from './customer-actions.service';
 import {
   ChangePlanDto,
+  PlanCardDto,
   PlanPaymentDto,
   CreateNoteDto,
   CreateRiskFlagDto,
@@ -242,6 +243,18 @@ export class CustomersController {
     @Body() dto: PlanPaymentDto,
   ) {
     return this.actions.recordPlanPayment(staff, id, dto);
+  }
+
+  /** Starts a plan by charging the card the customer has on file. */
+  @Post(':id/plan-card')
+  @RequirePermissions('credits.adjust')
+  @Idempotent()
+  planCard(
+    @CurrentStaff() staff: StaffPrincipal,
+    @Param('id') id: string,
+    @Body() dto: PlanCardDto,
+  ) {
+    return this.actions.chargePlanToCard(staff, id, dto);
   }
 
   @Post(':id/reset-rate-limits')

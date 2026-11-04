@@ -151,6 +151,11 @@ export class PlanPaymentDto extends ReasonDto {
   reference!: string;
 }
 
+export class PlanCardDto extends ReasonDto {
+  @IsString()
+  planId!: string;
+}
+
 export class ChangePlanDto extends ReasonDto {
   @IsString()
   planId!: string;

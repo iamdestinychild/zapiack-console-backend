@@ -278,6 +278,55 @@ export class CustomerActionsService {
   }
 
   /**
+   * Starts a plan for a customer by charging the card on their account. Real money leaves their card, so the amount draws the
+   * same line the wallet adjustments do: above the limit it needs `credits.approve` as well. The plan itself starts when the
+   * card payment clears, which is when the customer is told.
+   */
+  async chargePlanToCard(
+    actor: StaffPrincipal,
+    accountId: string,
+    input: { planId: string; reason: string },
+  ) {
+    await this.requireAccount(accountId);
+
+    const plan = await this.zapiack.read.plans.findUnique({
+      where: { id: input.planId },
+      select: { id: true, name: true, basePrice: true },
+    });
+    if (!plan) throw new NotFoundException('Plan not found');
+
+    const limit = this.config.get('admin', { infer: true }).limits
+      .creditApprovalThresholdNgn;
+    if (
+      Number(plan.basePrice) > limit &&
+      !actor.permissions.includes('credits.approve')
+    ) {
+      throw new ForbiddenException(
+        `Charging a card for more than ₦${limit.toLocaleString('en-NG')} needs someone with credit approval.`,
+      );
+    }
+
+    const result = await this.adminApiCore.chargePlanToCard(accountId, {
+      planId: input.planId,
+    });
+
+    await this.audit.record({
+      actor,
+      action: 'customers.plan_card_charge',
+      targetType: 'account',
+      targetId: accountId,
+      reason: input.reason,
+      before: null,
+      after: {
+        plan: { id: plan.id, name: plan.name },
+        reference: result.reference ?? null,
+        paidWith: result.paidWith ?? null,
+      },
+    });
+    return result;
+  }
+
+  /**
    * A customer paid outside the app (a bank transfer) and the plan has to be started by hand. The payment goes into their
    * wallet and the plan is paid from it, in one transaction in api-core; this adds who may do it, the limit, and the audit.
    *
