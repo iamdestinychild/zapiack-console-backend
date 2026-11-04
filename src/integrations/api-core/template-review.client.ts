@@ -33,6 +33,23 @@ export interface ApiCoreTemplate {
   html?: string | null;
 }
 
+/** A row of api-core's billing markets table: how one country's new accounts are set up. */
+export interface ApiCoreBillingMarket {
+  id: string;
+  /** The owner's country, or `*` for every country without a row of its own. */
+  countryCode: string;
+  currency: string;
+  welcomeBonusEnabled: boolean;
+  /** The bonus in `currency`, as a decimal string. Null follows the environment default. */
+  welcomeBonusAmount: string | null;
+  /** What a new account would really get: the amount, the environment default, or 0 when it is off. */
+  effectiveWelcomeBonus?: string;
+  note: string | null;
+  updatedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** A row of api-core's service availability table. */
 export interface ApiCoreAvailabilityRule {
   id: string;
@@ -190,6 +207,30 @@ export class TemplateReviewClient {
     return this.call(
       'DELETE',
       `/admin/service-availability/${encodeURIComponent(id)}`,
+    );
+  }
+
+  // ------------------------------------------------------------ billing markets
+
+  listBillingMarkets(): Promise<ApiCoreBillingMarket[]> {
+    return this.call('GET', '/admin/billing-markets');
+  }
+
+  setBillingMarket(input: {
+    countryCode: string;
+    currency: string;
+    welcomeBonusEnabled: boolean;
+    welcomeBonusAmount?: number | null;
+    note?: string;
+    updatedBy: string;
+  }): Promise<ApiCoreBillingMarket> {
+    return this.call('PUT', '/admin/billing-markets', input);
+  }
+
+  deleteBillingMarket(id: string): Promise<ApiCoreBillingMarket> {
+    return this.call(
+      'DELETE',
+      `/admin/billing-markets/${encodeURIComponent(id)}`,
     );
   }
 
