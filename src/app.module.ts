@@ -25,6 +25,7 @@ import { HealthController } from './health.controller';
 import { AuthModule } from './modules/auth/auth.module';
 import { StaffModule } from './modules/staff/staff.module';
 import { CustomersModule } from './modules/customers/customers.module';
+import { AvailabilityModule } from './modules/availability/availability.module';
 import { CreditsModule } from './modules/credits/credits.module';
 import { PlansModule } from './modules/plans/plans.module';
 import { FinanceModule } from './modules/finance/finance.module';
@@ -70,6 +71,7 @@ import { JobsModule } from './modules/jobs/jobs.module';
     AuthModule,
     StaffModule,
     CustomersModule,
+    AvailabilityModule,
     CreditsModule,
     PlansModule,
     FinanceModule,

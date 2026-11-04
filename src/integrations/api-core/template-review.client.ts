@@ -33,6 +33,19 @@ export interface ApiCoreTemplate {
   html?: string | null;
 }
 
+/** A row of api-core's service availability table. */
+export interface ApiCoreAvailabilityRule {
+  id: string;
+  accountCountry: string;
+  service: string;
+  destinationCountry: string;
+  enabled: boolean;
+  note: string | null;
+  updatedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /**
  * api-core's template review routes (`/v1/admin/templates/*`).
  *
@@ -134,8 +147,54 @@ export class TemplateReviewClient {
     );
   }
 
+  /** Adds to or charges a wallet by hand. The key makes a repeat return what was done the first time. */
+  adjustBalance(
+    accountId: string,
+    input: {
+      direction: 'CREDIT' | 'DEBIT';
+      amount: string;
+      reason: string;
+      idempotencyKey: string;
+      recordedBy: string;
+    },
+  ): Promise<{
+    alreadyApplied: boolean;
+    transactionId: string;
+    balanceAfter: string | null;
+  }> {
+    return this.call(
+      'POST',
+      `/admin/accounts/${encodeURIComponent(accountId)}/balance-adjustment`,
+      input,
+    );
+  }
+
+  // -------------------------------------------------------------- availability
+
+  listAvailability(): Promise<ApiCoreAvailabilityRule[]> {
+    return this.call('GET', '/admin/service-availability');
+  }
+
+  setAvailability(input: {
+    accountCountry: string;
+    service: string;
+    destinationCountry: string;
+    enabled: boolean;
+    note?: string;
+    updatedBy: string;
+  }): Promise<ApiCoreAvailabilityRule> {
+    return this.call('PUT', '/admin/service-availability', input);
+  }
+
+  deleteAvailability(id: string): Promise<ApiCoreAvailabilityRule> {
+    return this.call(
+      'DELETE',
+      `/admin/service-availability/${encodeURIComponent(id)}`,
+    );
+  }
+
   private async call<T>(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     body?: unknown,
   ): Promise<T> {

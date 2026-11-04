@@ -17,6 +17,7 @@ export const PERMISSIONS = {
   plans: ['plans.manage', 'pricing.manage'],
   finance: ['finance.read', 'finance.export'],
   geo: ['geo.view'],
+  availability: ['availability.manage'],
   senderid: ['senderid.review', 'senderid.documents.download'],
   templates: ['templates.review'],
   messages: ['messages.read'],
@@ -41,6 +42,7 @@ export const REASON_REQUIRED_ACTIONS = new Set([
   'senderid.request_changes',
   'pii.reveal',
   'credits.adjust',
+  'availability.manage',
 ]);
 
 /** Role bundles shipped with the system. Editable afterwards from the console. */

@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { AdminPrismaService } from '../../common/prisma/admin-prisma.service';
 import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service';
 import { AuditService } from '../../common/audit/audit.service';
-import { ApiCoreClient } from '../../integrations/api-core/api-core.client';
+import { TemplateReviewClient } from '../../integrations/api-core/template-review.client';
 import {
   buildPage,
   cursorWhere,
@@ -33,7 +33,7 @@ export class CreditsService {
   constructor(
     private readonly admin: AdminPrismaService,
     private readonly zapiack: ZapiackPrismaService,
-    private readonly apiCore: ApiCoreClient,
+    private readonly apiCore: TemplateReviewClient,
     private readonly audit: AuditService,
     config: ConfigService<{ admin: AdminConfig }, true>,
   ) {
@@ -169,20 +169,15 @@ export class CreditsService {
     });
 
     try {
-      const result = await this.apiCore.adjustCredit(
-        adjustment.accountId,
-        {
-          direction: adjustment.direction,
-          amountNgn: adjustment.amountNgn.toString(),
-          reason: adjustment.reason,
-          adjustmentId: adjustment.id,
-        },
-        {
-          actorId: actor.id,
-          actorEmail: actor.email,
-          idempotencyKey: adjustment.idempotencyKey,
-        },
-      );
+      // The wallet moves in api-core, which owns the ledger. The adjustment's own key travels with it, so a retry after a
+      // timeout resolves to the same ledger entry instead of a second one.
+      const result = await this.apiCore.adjustBalance(adjustment.accountId, {
+        direction: adjustment.direction,
+        amount: adjustment.amountNgn.toString(),
+        reason: adjustment.reason,
+        idempotencyKey: adjustment.idempotencyKey,
+        recordedBy: actor.email,
+      });
 
       const applied = await this.admin.creditAdjustment.update({
         where: { id: adjustmentId },
