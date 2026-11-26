@@ -43,7 +43,6 @@ function build(
   };
   const service = new CustomerActionsService(
     {} as never,
-    {} as never,
     zapiack as never,
     {} as never,
     audit as never,

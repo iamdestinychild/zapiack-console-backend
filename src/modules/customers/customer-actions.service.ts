@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   ConflictException,
   ForbiddenException,
@@ -11,7 +12,6 @@ import { ZapiackPrismaService } from '../../common/prisma/zapiack-prisma.service
 import { AuditService } from '../../common/audit/audit.service';
 import { ProductCacheService } from '../../common/redis/product-cache.service';
 import { ConfigService } from '@nestjs/config';
-import { ApiCoreClient } from '../../integrations/api-core/api-core.client';
 import { TemplateReviewClient } from '../../integrations/api-core/template-review.client';
 import type { AdminConfig } from '../../common/config/configuration';
 import { ZapiackWriteService } from '../../common/prisma/zapiack-write.service';
@@ -20,15 +20,15 @@ import type { RiskFlagType, RiskSeverity } from '../../generated/admin/client';
 import type { StaffPrincipal } from '../../common/auth/staff-principal';
 
 /**
- * Write actions on customer accounts. Each one is a command to api-core, never a
- * direct write to the Zapiack DB, and each leaves a before/after snapshot behind.
+ * Write actions on customer accounts, each leaving a before/after snapshot behind. Money and plan changes, sessions and
+ * rate limits are commands to api-core's admin routes; status, API-key and project flags are written directly, followed by
+ * clearing api-core's cached copy.
  */
 @Injectable()
 export class CustomerActionsService {
   private readonly logger = new Logger(CustomerActionsService.name);
 
   constructor(
-    private readonly apiCore: ApiCoreClient,
     private readonly writer: ZapiackWriteService,
     private readonly zapiack: ZapiackPrismaService,
     private readonly admin: AdminPrismaService,
@@ -37,10 +37,6 @@ export class CustomerActionsService {
     private readonly adminApiCore: TemplateReviewClient,
     private readonly config: ConfigService<{ admin: AdminConfig }, true>,
   ) {}
-
-  private ctx(actor: StaffPrincipal, idempotencyKey?: string) {
-    return { actorId: actor.id, actorEmail: actor.email, idempotencyKey };
-  }
 
   private async requireAccount(accountId: string) {
     const account = await this.zapiack.read.accounts.findUnique({
@@ -137,13 +133,9 @@ export class CustomerActionsService {
     actor: StaffPrincipal,
     accountId: string,
     reason: string,
-    key?: string,
   ) {
     await this.requireAccount(accountId);
-    const result = await this.apiCore.forceLogout(
-      accountId,
-      this.ctx(actor, key),
-    );
+    const result = await this.adminApiCore.forceLogout(accountId);
 
     await this.audit.record({
       actor,
@@ -254,26 +246,39 @@ export class CustomerActionsService {
     ]);
     if (!plan) throw new NotFoundException('Plan not found');
 
-    const result = await this.apiCore.changePlan(
-      accountId,
+    // Paid from the customer's wallet by api-core, in one transaction; a downgrade is only scheduled. api-core's internal
+    // command surface has no plan route, so this goes through the admin route that plan payments use.
+    const result = await this.adminApiCore.changePlanFromWallet(accountId, {
       planId,
       reason,
-      this.ctx(actor, key),
-    );
-
-    await this.audit.record({
-      actor,
-      action: 'customers.change_plan',
-      targetType: 'account',
-      targetId: accountId,
-      reason,
-      before: { plan: current?.plan ?? null },
-      after: { plan },
+      recordedBy: actor.email,
+      idempotencyKey: key ?? randomUUID(),
     });
+
+    if (!result.alreadyApplied) {
+      await this.audit.record({
+        actor,
+        action: 'customers.change_plan',
+        targetType: 'account',
+        targetId: accountId,
+        reason,
+        before: { plan: current?.plan ?? null },
+        after: {
+          plan,
+          direction: result.direction,
+          charged: result.charged ?? '0.00',
+          effectiveAt: result.effectiveAt ?? null,
+        },
+      });
+    }
     return {
       accountId,
       planId,
-      subscriptionId: result?.subscriptionId ?? null,
+      subscriptionId: result.subscriptionId ?? null,
+      direction: result.direction,
+      charged: result.charged ?? '0.00',
+      effectiveAt: result.effectiveAt ?? null,
+      alreadyApplied: result.alreadyApplied,
     };
   }
 
@@ -399,10 +404,9 @@ export class CustomerActionsService {
     actor: StaffPrincipal,
     accountId: string,
     reason: string,
-    key?: string,
   ) {
     await this.requireAccount(accountId);
-    await this.apiCore.resetRateLimits(accountId, this.ctx(actor, key));
+    const result = await this.adminApiCore.resetRateLimits(accountId);
 
     await this.audit.record({
       actor,
@@ -410,8 +414,9 @@ export class CustomerActionsService {
       targetType: 'account',
       targetId: accountId,
       reason,
+      after: { cleared: result.cleared },
     });
-    return { accountId, reset: true };
+    return { accountId, reset: true, cleared: result.cleared };
   }
 
   // ---------------------------------------------------------------- risk flags

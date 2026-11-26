@@ -41,7 +41,6 @@ function setup(cacheWorks = true) {
     invalidateApiKey: jest.fn(() => Promise.resolve(cacheWorks)),
   };
   const service = new CustomerActionsService(
-    {} as never,
     writer as never,
     zapiack as never,
     {} as never,

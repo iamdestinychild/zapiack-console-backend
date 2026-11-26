@@ -34,6 +34,7 @@ import { ServicesModule } from './modules/services/services.module';
 import { MemoryReporter } from './common/diagnostics/memory-reporter.service';
 import { MessagesModule } from './modules/messages/messages.module';
 import { TemplatesModule } from './modules/templates/templates.module';
+import { MarketplaceReviewModule } from './modules/marketplace/marketplace.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { SenderIdsModule } from './modules/sender-ids/sender-ids.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
@@ -80,6 +81,7 @@ import { JobsModule } from './modules/jobs/jobs.module';
     ServicesModule,
     MessagesModule,
     TemplatesModule,
+    MarketplaceReviewModule,
     GeoModule,
     SenderIdsModule,
     NotificationsModule,
