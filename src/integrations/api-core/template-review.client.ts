@@ -278,7 +278,9 @@ export class TemplateReviewClient {
   }
 
   /** Clears the rate-limit counters held for the account, its owner and its projects. */
-  resetRateLimits(accountId: string): Promise<{ reset: true; cleared: number }> {
+  resetRateLimits(
+    accountId: string,
+  ): Promise<{ reset: true; cleared: number }> {
     return this.call(
       'POST',
       `/admin/accounts/${encodeURIComponent(accountId)}/reset-rate-limits`,
@@ -312,7 +314,10 @@ export class TemplateReviewClient {
 
   /** Customers' marketplace listings in one status, oldest first while they wait. */
   marketplaceQueue(status: string): Promise<ApiCoreMarketplaceListing[]> {
-    return this.call('GET', `/admin/marketplace/queue?status=${encodeURIComponent(status)}`);
+    return this.call(
+      'GET',
+      `/admin/marketplace/queue?status=${encodeURIComponent(status)}`,
+    );
   }
 
   marketplaceListing(id: string): Promise<ApiCoreMarketplaceListing> {
@@ -320,12 +325,23 @@ export class TemplateReviewClient {
   }
 
   /** Approves a waiting listing, or rejects one (waiting or live) with a reason the customer sees. */
-  decideMarketplace(id: string, reviewer: string, input: { approve: boolean; reason?: string }): Promise<ApiCoreMarketplaceListing> {
-    return this.call('POST', `/admin/marketplace/${encodeURIComponent(id)}/decision?reviewer=${encodeURIComponent(reviewer)}`, input);
+  decideMarketplace(
+    id: string,
+    reviewer: string,
+    input: { approve: boolean; reason?: string },
+  ): Promise<ApiCoreMarketplaceListing> {
+    return this.call(
+      'POST',
+      `/admin/marketplace/${encodeURIComponent(id)}/decision?reviewer=${encodeURIComponent(reviewer)}`,
+      input,
+    );
   }
 
   /** Every listing in the marketplace, hidden ones too: Zapiack's own and the community's. */
-  marketplaceCatalog(channel?: string, q?: string): Promise<{ counts: Record<string, number>; data: ApiCoreCatalogRow[] }> {
+  marketplaceCatalog(
+    channel?: string,
+    q?: string,
+  ): Promise<{ counts: Record<string, number>; data: ApiCoreCatalogRow[] }> {
     const params = new URLSearchParams();
     if (channel) params.set('channel', channel);
     if (q) params.set('q', q);
@@ -333,8 +349,21 @@ export class TemplateReviewClient {
   }
 
   /** Hides, shows or features one listing. */
-  setMarketplaceOverride(channel: string, slug: string, reviewer: string, input: { hidden?: boolean; featured?: boolean }): Promise<{ key: string; before: { hidden: boolean; featured: boolean }; after: { hidden: boolean; featured: boolean } }> {
-    return this.call('PUT', `/admin/marketplace/catalog/${encodeURIComponent(channel)}/${encodeURIComponent(slug)}?reviewer=${encodeURIComponent(reviewer)}`, input);
+  setMarketplaceOverride(
+    channel: string,
+    slug: string,
+    reviewer: string,
+    input: { hidden?: boolean; featured?: boolean },
+  ): Promise<{
+    key: string;
+    before: { hidden: boolean; featured: boolean };
+    after: { hidden: boolean; featured: boolean };
+  }> {
+    return this.call(
+      'PUT',
+      `/admin/marketplace/catalog/${encodeURIComponent(channel)}/${encodeURIComponent(slug)}?reviewer=${encodeURIComponent(reviewer)}`,
+      input,
+    );
   }
 
   // -------------------------------------------------------------- availability

@@ -1,9 +1,17 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { AuditService } from '../../common/audit/audit.service';
 import type { StaffPrincipal } from '../../common/auth/staff-principal';
-import { TemplateReviewClient, type ApiCoreMarketplaceListing } from '../../integrations/api-core/template-review.client';
+import {
+  TemplateReviewClient,
+  type ApiCoreMarketplaceListing,
+} from '../../integrations/api-core/template-review.client';
 
-export const LISTING_STATUSES = ['pending', 'approved', 'rejected', 'withdrawn'] as const;
+export const LISTING_STATUSES = [
+  'pending',
+  'approved',
+  'rejected',
+  'withdrawn',
+] as const;
 export type ListingStatus = (typeof LISTING_STATUSES)[number];
 export type ListingAction = 'approve' | 'reject' | 'take_down';
 
@@ -27,11 +35,27 @@ export class MarketplaceReviewService {
 
   /** One status's listings, with a count for every status so the tabs can show them. */
   async list(status: ListingStatus = 'pending', q?: string) {
-    const all = await Promise.all(LISTING_STATUSES.map((s) => this.client.marketplaceQueue(s)));
-    const counts = Object.fromEntries(LISTING_STATUSES.map((s, i) => [s, all[i].length])) as Record<ListingStatus, number>;
+    const all = await Promise.all(
+      LISTING_STATUSES.map((s) => this.client.marketplaceQueue(s)),
+    );
+    const counts = Object.fromEntries(
+      LISTING_STATUSES.map((s, i) => [s, all[i].length]),
+    ) as Record<ListingStatus, number>;
     const needle = q?.trim().toLowerCase();
-    const rows = all[LISTING_STATUSES.indexOf(status)].filter((r) => !needle || [r.title, r.slug, r.authorName, r.accountId, r.projectId].some((f) => f?.toLowerCase().includes(needle)));
-    return { counts, data: rows.map((r) => ({ ...summary(r), actions: allowedListingActions(r.status) })) };
+    const rows = all[LISTING_STATUSES.indexOf(status)].filter(
+      (r) =>
+        !needle ||
+        [r.title, r.slug, r.authorName, r.accountId, r.projectId].some((f) =>
+          f?.toLowerCase().includes(needle),
+        ),
+    );
+    return {
+      counts,
+      data: rows.map((r) => ({
+        ...summary(r),
+        actions: allowedListingActions(r.status),
+      })),
+    };
   }
 
   /** Every listing in the marketplace, for staff to manage: Zapiack's own, the community's, and what is hidden. */
@@ -40,11 +64,29 @@ export class MarketplaceReviewService {
   }
 
   /** Hides, shows or features a listing. It is recorded who did it, and what it was before. */
-  async setOverride(actor: StaffPrincipal, channel: string, slug: string, input: { hidden?: boolean; featured?: boolean }, reason: string) {
-    const out = await this.client.setMarketplaceOverride(channel, slug, `console:${actor.id}`, input);
+  async setOverride(
+    actor: StaffPrincipal,
+    channel: string,
+    slug: string,
+    input: { hidden?: boolean; featured?: boolean },
+    reason: string,
+  ) {
+    const out = await this.client.setMarketplaceOverride(
+      channel,
+      slug,
+      `console:${actor.id}`,
+      input,
+    );
     await this.audit.record({
       actor,
-      action: input.hidden === undefined ? (input.featured ? 'marketplace.feature' : 'marketplace.unfeature') : input.hidden ? 'marketplace.hide' : 'marketplace.show',
+      action:
+        input.hidden === undefined
+          ? input.featured
+            ? 'marketplace.feature'
+            : 'marketplace.unfeature'
+          : input.hidden
+            ? 'marketplace.hide'
+            : 'marketplace.show',
       targetType: 'marketplace_listing',
       targetId: out.key,
       reason,
@@ -60,10 +102,25 @@ export class MarketplaceReviewService {
     return { ...row, actions: allowedListingActions(row.status) };
   }
 
-  async decide(actor: StaffPrincipal, id: string, action: ListingAction, reason: string) {
+  async decide(
+    actor: StaffPrincipal,
+    id: string,
+    action: ListingAction,
+    reason: string,
+  ) {
     const before = await this.client.marketplaceListing(id);
-    if (!allowedListingActions(before.status).includes(action)) throw new ConflictException(`A ${before.status} listing cannot be ${action === 'take_down' ? 'taken down' : `${action}d`}`);
-    const after = await this.client.decideMarketplace(id, `console:${actor.id}`, { approve: action === 'approve', reason: action === 'approve' ? undefined : reason });
+    if (!allowedListingActions(before.status).includes(action))
+      throw new ConflictException(
+        `A ${before.status} listing cannot be ${action === 'take_down' ? 'taken down' : `${action}d`}`,
+      );
+    const after = await this.client.decideMarketplace(
+      id,
+      `console:${actor.id}`,
+      {
+        approve: action === 'approve',
+        reason: action === 'approve' ? undefined : reason,
+      },
+    );
     await this.audit.record({
       actor,
       action: `marketplace.${action}`,
@@ -72,12 +129,39 @@ export class MarketplaceReviewService {
       reason,
       before: { status: before.status },
       after: { status: after.status },
-      metadata: { slug: before.slug, channel: before.channel, title: before.title, accountId: before.accountId, projectId: before.projectId },
+      metadata: {
+        slug: before.slug,
+        channel: before.channel,
+        title: before.title,
+        accountId: before.accountId,
+        projectId: before.projectId,
+      },
     });
-    return { id: after.id, status: after.status, previousStatus: before.status, rejectionReason: after.rejectionReason, reviewedAt: after.reviewedAt };
+    return {
+      id: after.id,
+      status: after.status,
+      previousStatus: before.status,
+      rejectionReason: after.rejectionReason,
+      reviewedAt: after.reviewedAt,
+    };
   }
 }
 
 function summary(r: ApiCoreMarketplaceListing) {
-  return { id: r.id, slug: r.slug, channel: r.channel, kind: r.kind, title: r.title, description: r.description, category: r.category, status: r.status, authorName: r.authorName, accountId: r.accountId, projectId: r.projectId, rejectionReason: r.rejectionReason, createdAt: r.createdAt, reviewedAt: r.reviewedAt };
+  return {
+    id: r.id,
+    slug: r.slug,
+    channel: r.channel,
+    kind: r.kind,
+    title: r.title,
+    description: r.description,
+    category: r.category,
+    status: r.status,
+    authorName: r.authorName,
+    accountId: r.accountId,
+    projectId: r.projectId,
+    rejectionReason: r.rejectionReason,
+    createdAt: r.createdAt,
+    reviewedAt: r.reviewedAt,
+  };
 }
