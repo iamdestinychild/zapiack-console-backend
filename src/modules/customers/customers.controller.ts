@@ -165,14 +165,8 @@ export class CustomersController {
     @CurrentStaff() staff: StaffPrincipal,
     @Param('id') id: string,
     @Body() dto: ReasonDto,
-    @Req() req: Request,
   ) {
-    return this.actions.forceLogout(
-      staff,
-      id,
-      dto.reason,
-      req.get('idempotency-key'),
-    );
+    return this.actions.forceLogout(staff, id, dto.reason);
   }
 
   @Patch(':id/api-keys')
@@ -264,14 +258,8 @@ export class CustomersController {
     @CurrentStaff() staff: StaffPrincipal,
     @Param('id') id: string,
     @Body() dto: ReasonDto,
-    @Req() req: Request,
   ) {
-    return this.actions.resetRateLimits(
-      staff,
-      id,
-      dto.reason,
-      req.get('idempotency-key'),
-    );
+    return this.actions.resetRateLimits(staff, id, dto.reason);
   }
 
   // ---------------------------------------------------------------- PII

@@ -33,6 +33,49 @@ export interface ApiCoreTemplate {
   html?: string | null;
 }
 
+/** One row of the marketplace catalogue: a listing as staff manage it. */
+export interface ApiCoreCatalogRow {
+  key: string;
+  slug: string;
+  channel: 'push' | 'sms' | 'whatsapp' | 'website';
+  kind: string;
+  title: string;
+  category: string;
+  source: 'zapiack' | 'community';
+  authorName: string;
+  hidden: boolean;
+  featured: boolean;
+  copies: number;
+  rating: { average: number | null; count: number };
+}
+
+/** A customer's marketplace listing as api-core presents it to a reviewer. */
+export interface ApiCoreMarketplaceListing {
+  id: string;
+  slug: string;
+  channel: 'push' | 'sms' | 'whatsapp' | 'email';
+  /** template, preset or block (push designs copied as a starting point). */
+  kind: string;
+  title: string;
+  description: string;
+  category: string;
+  status: 'pending' | 'approved' | 'rejected' | 'withdrawn';
+  rejectionReason: string | null;
+  authorName: string;
+  projectId: string;
+  accountId: string;
+  sourceId: string | null;
+  /** What gets copied: a push design, an SMS text or WhatsApp components. */
+  content: unknown;
+  sample: unknown;
+  submittedBy: string;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  variables?: { name: string; type: string }[];
+}
+
 /** A row of api-core's billing markets table: how one country's new accounts are set up. */
 export interface ApiCoreBillingMarket {
   id: string;
@@ -196,6 +239,53 @@ export class TemplateReviewClient {
     );
   }
 
+  /**
+   * Moves a customer who already has a running plan onto another, paid from their wallet. An upgrade charges the difference
+   * (less the unused part of the old plan); a downgrade is scheduled for the end of the period and charges nothing. The
+   * key makes a repeat return what was done the first time.
+   */
+  changePlanFromWallet(
+    accountId: string,
+    input: {
+      planId: string;
+      reason: string;
+      recordedBy: string;
+      idempotencyKey: string;
+    },
+  ): Promise<{
+    alreadyApplied: boolean;
+    direction: 'UPGRADE' | 'DOWNGRADE';
+    subscriptionId?: string;
+    charged?: string;
+    creditApplied?: string;
+    currentPeriodEnd?: string;
+    effectiveAt?: string;
+  }> {
+    return this.call(
+      'POST',
+      `/admin/accounts/${encodeURIComponent(accountId)}/plan-change`,
+      input,
+    );
+  }
+
+  /** Ends the customer's login at once. Their data and API keys are untouched. */
+  forceLogout(accountId: string): Promise<{ revokedSessions: number }> {
+    return this.call(
+      'POST',
+      `/admin/accounts/${encodeURIComponent(accountId)}/force-logout`,
+      {},
+    );
+  }
+
+  /** Clears the rate-limit counters held for the account, its owner and its projects. */
+  resetRateLimits(accountId: string): Promise<{ reset: true; cleared: number }> {
+    return this.call(
+      'POST',
+      `/admin/accounts/${encodeURIComponent(accountId)}/reset-rate-limits`,
+      {},
+    );
+  }
+
   /** Adds to or charges a wallet by hand. The key makes a repeat return what was done the first time. */
   adjustBalance(
     accountId: string,
@@ -216,6 +306,35 @@ export class TemplateReviewClient {
       `/admin/accounts/${encodeURIComponent(accountId)}/balance-adjustment`,
       input,
     );
+  }
+
+  // --------------------------------------------------------------- marketplace
+
+  /** Customers' marketplace listings in one status, oldest first while they wait. */
+  marketplaceQueue(status: string): Promise<ApiCoreMarketplaceListing[]> {
+    return this.call('GET', `/admin/marketplace/queue?status=${encodeURIComponent(status)}`);
+  }
+
+  marketplaceListing(id: string): Promise<ApiCoreMarketplaceListing> {
+    return this.call('GET', `/admin/marketplace/${encodeURIComponent(id)}`);
+  }
+
+  /** Approves a waiting listing, or rejects one (waiting or live) with a reason the customer sees. */
+  decideMarketplace(id: string, reviewer: string, input: { approve: boolean; reason?: string }): Promise<ApiCoreMarketplaceListing> {
+    return this.call('POST', `/admin/marketplace/${encodeURIComponent(id)}/decision?reviewer=${encodeURIComponent(reviewer)}`, input);
+  }
+
+  /** Every listing in the marketplace, hidden ones too: Zapiack's own and the community's. */
+  marketplaceCatalog(channel?: string, q?: string): Promise<{ counts: Record<string, number>; data: ApiCoreCatalogRow[] }> {
+    const params = new URLSearchParams();
+    if (channel) params.set('channel', channel);
+    if (q) params.set('q', q);
+    return this.call('GET', `/admin/marketplace/catalog?${params.toString()}`);
+  }
+
+  /** Hides, shows or features one listing. */
+  setMarketplaceOverride(channel: string, slug: string, reviewer: string, input: { hidden?: boolean; featured?: boolean }): Promise<{ key: string; before: { hidden: boolean; featured: boolean }; after: { hidden: boolean; featured: boolean } }> {
+    return this.call('PUT', `/admin/marketplace/catalog/${encodeURIComponent(channel)}/${encodeURIComponent(slug)}?reviewer=${encodeURIComponent(reviewer)}`, input);
   }
 
   // -------------------------------------------------------------- availability
