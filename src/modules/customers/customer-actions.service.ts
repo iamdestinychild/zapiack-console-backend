@@ -129,11 +129,7 @@ export class CustomerActionsService {
     return this.setStatus(actor, accountId, AccountStatus.BANNED, reason);
   }
 
-  async forceLogout(
-    actor: StaffPrincipal,
-    accountId: string,
-    reason: string,
-  ) {
+  async forceLogout(actor: StaffPrincipal, accountId: string, reason: string) {
     await this.requireAccount(accountId);
     const result = await this.adminApiCore.forceLogout(accountId);
 
